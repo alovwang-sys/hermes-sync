@@ -46,6 +46,7 @@ hermes_sync/
   __init__.py
   cli.py
   sync_engine.py
+  session_snapshots.py
   manifest.py
   scopes.py
   conflicts.py
@@ -100,7 +101,10 @@ The implemented surfaces are:
 - implement a local-folder `RemoteBackend`
 - stage outgoing objects under `sync/outbox`
 - stage incoming objects under `sync/inbox` before import
-- run `push`, `pull`, and `once` for supported config/artifact objects
+- run `push`, `pull`, and `once` for supported config, artifact, and session
+  snapshot objects
+- export session snapshots from `state.db` through read-only SQLite queries and
+  store pulled snapshots under plugin-owned `sync/sessions/` history
 - keep top-level `hermes sync status` as future work until Hermes core exposes
   a generic plugin CLI-command bridge
 

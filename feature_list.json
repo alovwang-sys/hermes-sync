@@ -140,6 +140,12 @@
       "traversal_rejection",
       "symlink_escape_rejection",
       "empty_profiles",
+      "config_export",
+      "secret_exclusion",
+      "db_file_exclusion",
+      "artifact_push_pull",
+      "runtime_file_exclusion",
+      "session_snapshot",
       "local_remote_object_round_trip",
       "outbox_processing",
       "inbox_staging_before_import",
@@ -233,7 +239,7 @@
       "id": "config.sync",
       "phase": 2,
       "surface": ["config scope"],
-      "status": "in_progress",
+      "status": "complete",
       "core_compatibility": "usable",
       "harness_scenarios": ["outbox_processing", "config_export", "secret_exclusion"]
     },
@@ -241,15 +247,15 @@
       "id": "artifact.sync",
       "phase": 2,
       "surface": ["artifacts scope", "post_tool_call"],
-      "status": "in_progress",
+      "status": "complete",
       "core_compatibility": "usable",
       "harness_scenarios": ["inbox_staging_before_import", "artifact_push_pull", "runtime_file_exclusion"]
     },
     {
       "id": "session.snapshots",
       "phase": 2,
-      "surface": ["sessions scope", "on_session_end", "state.db read-only export"],
-      "status": "not_started",
+      "surface": ["sessions scope", "future on_session_end", "state.db read-only export", "sync/sessions read-only history"],
+      "status": "complete",
       "core_compatibility": "usable_for_snapshots",
       "harness_scenarios": ["session_snapshot", "db_file_exclusion"]
     },
@@ -390,32 +396,32 @@
     },
     {
       "id": "config_export",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Non-secret config appears in outbox."
     },
     {
       "id": "secret_exclusion",
-      "status": "not_started",
+      "status": "complete",
       "expected": ".env and token-like keys are skipped everywhere."
     },
     {
       "id": "db_file_exclusion",
-      "status": "not_started",
+      "status": "complete",
       "expected": "state.db, WAL, and SHM files are never synced as files."
     },
     {
       "id": "artifact_push_pull",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Text artifact arrives on the second isolated profile."
     },
     {
       "id": "runtime_file_exclusion",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Logs, caches, tmp files, lock files, and watcher state remain local."
     },
     {
       "id": "session_snapshot",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Session JSON is exported from SQLite without copying SQLite files."
     },
     {
@@ -475,10 +481,9 @@
     }
   ],
   "immediate_next_actions": [
-    "Add dedicated config_export and secret_exclusion harness scenarios for sanitized config handling.",
-    "Add dedicated artifact_push_pull and runtime_file_exclusion harness scenarios around post-tool artifacts.",
-    "Export session snapshots from state.db through sqlite3 reads without syncing SQLite files.",
     "Implement tombstone propagation and conflict creation on top of the local-folder backend.",
+    "Add version-history restore coverage once tombstones and conflicts are deterministic.",
+    "Start Phase 3 continuous sync scheduling while keeping watcher state local.",
     "Treat top-level hermes sync as blocked until Hermes core exposes generic plugin CLI registration before argparse parsing."
   ]
 }

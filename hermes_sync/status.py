@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 from .manifest import ensure_device, ensure_manifest, get_hermes_home, inspect_manifest
 from .scopes import scan_profile
+from .session_snapshots import export_session_snapshots
 
 
 def get_status(profile: Path | None = None) -> Dict[str, Any]:
@@ -17,6 +18,15 @@ def get_status(profile: Path | None = None) -> Dict[str, Any]:
     ensure_manifest(profile_root)
     manifest = inspect_manifest(profile_root)
     scan = scan_profile(profile_root)
+    scan_data = scan.as_dict()
+    session_exports = export_session_snapshots(profile_root)
+    if session_exports:
+        scan_data["objects"].extend(export.scan_object.as_dict() for export in session_exports)
+        scan_data["objects"].sort(key=lambda obj: (obj["scope"], obj["logical_path"]))
+        scan_data["object_count"] = len(scan_data["objects"])
+        scope_counts = dict(scan_data.get("scope_counts") or {})
+        scope_counts["sessions"] = scope_counts.get("sessions", 0) + len(session_exports)
+        scan_data["scope_counts"] = dict(sorted(scope_counts.items()))
     return {
         "status": "ok",
         "profile": str(profile_root),
@@ -27,7 +37,7 @@ def get_status(profile: Path | None = None) -> Dict[str, Any]:
             "last_remote_cursor": device.get("last_remote_cursor"),
         },
         "manifest": manifest,
-        "scan": scan.as_dict(),
+        "scan": scan_data,
         "dirty_object_count": manifest["dirty_objects"],
         "actions": {
             "uploaded": 0,

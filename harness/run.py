@@ -23,6 +23,8 @@ BLOCKED_MARKERS = (
     "sync.lock",
     "random.txt",
     "outside-link.txt",
+    "provider_credentials.json",
+    "watcher-state.json",
 )
 
 
@@ -47,6 +49,16 @@ def run() -> dict:
         device_a = harness.make_profile("device-a", remote)
         device_b = harness.make_profile("device-b", remote)
         harness.seed_phase1_fixture(device_a)
+
+        def remote_payload(remote_path: Path) -> str:
+            objects = harness.list_remote_objects(remote_path)
+            chunks = [json.dumps(objects, sort_keys=True)]
+            for obj in objects:
+                content = harness.read_remote_object_content(
+                    remote_path, obj["scope"], obj["object_id"]
+                )
+                chunks.append(content.decode("utf-8", errors="replace"))
+            return "\n".join(chunks)
 
         def plugin_manifest_loads() -> str:
             manager = harness.load_plugin_manager(device_a)
@@ -168,6 +180,147 @@ def run() -> dict:
             require(data["actions"] == {"uploaded": 0, "downloaded": 0, "imported": 0, "deleted": 0}, "empty status ran sync actions")
             return "empty isolated profile reports no dirty objects"
 
+        def config_export() -> str:
+            config_remote = harness.make_remote("config-export")
+            profile = harness.make_profile("config-export-source", config_remote)
+            result = harness.run_push(profile, config_remote)
+            require(result["status"] == "ok", "config export push did not complete")
+            remote_objects = harness.list_remote_objects(config_remote)
+            config_objects = [
+                obj
+                for obj in remote_objects
+                if obj["scope"] == "config" and obj["logical_path"] == "config.yaml"
+            ]
+            require(len(config_objects) == 1, "config.yaml was not exported once")
+            content = harness.read_remote_object_content(
+                config_remote,
+                config_objects[0]["scope"],
+                config_objects[0]["object_id"],
+            ).decode("utf-8")
+            require("plugins:" in content and "sync:" in content, "exported config content was incomplete")
+            outbox_paths = harness.sync_stage_paths(profile, "outbox")
+            expected_content = f"config/{config_objects[0]['object_id']}/content"
+            require(expected_content in outbox_paths, "config content was not staged in outbox")
+            return "non-secret config is staged and uploaded as a config object"
+
+        def secret_exclusion() -> str:
+            secret_remote = harness.make_remote("secret-exclusion")
+            profile = harness.make_profile("secret-source", secret_remote)
+            (profile / "config.yaml").write_text(
+                "plugins:\n"
+                "  enabled:\n"
+                "    - hermes-sync\n"
+                "sync:\n"
+                "  remote: local\n"
+                f"  remote_path: {secret_remote}\n"
+                "api_key: example-redacted\n"
+                "provider_token: example-redacted\n",
+                encoding="utf-8",
+            )
+            (profile / ".env").write_text("TOKEN=example-redacted\n", encoding="utf-8")
+            (profile / "provider_credentials.json").write_text("{}\n", encoding="utf-8")
+            result = harness.run_push(profile, secret_remote)
+            require(result["status"] == "ok", "secret exclusion push did not complete")
+            require(result["actions"]["uploaded"] == 0, "secret-like config was uploaded")
+            require(not harness.list_remote_objects(secret_remote), "secret scenario remote was not empty")
+            paths = harness.manifest_object_paths(profile)
+            payload = json.dumps(paths, sort_keys=True)
+            for marker in (".env", "provider_credentials.json", "api_key", "provider_token"):
+                require(marker not in payload, f"manifest included secret marker {marker}")
+            return "secret-like config keys and credential files are skipped everywhere"
+
+        def db_file_exclusion() -> str:
+            db_remote = harness.make_remote("db-file-exclusion")
+            profile = harness.make_profile("db-source", db_remote)
+            for name in ("state.db", "state.db-wal", "state.db-shm"):
+                (profile / name).write_bytes(b"not a real database\n")
+            result = harness.run_push(profile, db_remote)
+            require(result["status"] == "ok", "db exclusion push did not complete")
+            payload = remote_payload(db_remote)
+            for marker in ("state.db", "state.db-wal", "state.db-shm"):
+                require(marker not in payload, f"remote included database marker {marker}")
+            paths = harness.manifest_object_paths(profile)
+            require(not any("state.db" in path for path in paths), "manifest included database file")
+            return "state.db, WAL, and SHM files are never uploaded as files"
+
+        def artifact_push_pull() -> str:
+            artifact_remote = harness.make_remote("artifact-push-pull")
+            source = harness.make_profile("artifact-source", artifact_remote)
+            target = harness.make_profile("artifact-target", artifact_remote)
+            artifact = source / "artifacts" / "tool-output.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("Sanitized tool artifact.\n", encoding="utf-8")
+            push = harness.run_push(source, artifact_remote)
+            require(push["status"] == "ok", "artifact push did not complete")
+            pull = harness.run_pull(target, artifact_remote)
+            require(pull["status"] == "ok", "artifact pull did not complete")
+            imported = target / "artifacts" / "tool-output.txt"
+            require(imported.read_text(encoding="utf-8") == "Sanitized tool artifact.\n", "artifact content did not round-trip")
+            return "text artifact pushes from one profile and pulls into another"
+
+        def runtime_file_exclusion() -> str:
+            runtime_remote = harness.make_remote("runtime-file-exclusion")
+            profile = harness.make_profile("runtime-source", runtime_remote)
+            (profile / "artifacts").mkdir(exist_ok=True)
+            (profile / "artifacts" / "report.txt").write_text("Allowed artifact.\n", encoding="utf-8")
+            for dirname, filename in (
+                ("logs", "agent.log"),
+                ("cache", "cache.bin"),
+                ("tmp", "scratch.tmp"),
+                ("locks", "sync.lock"),
+                ("sync", "watcher-state.json"),
+            ):
+                folder = profile / dirname
+                folder.mkdir(exist_ok=True)
+                (folder / filename).write_text("runtime only\n", encoding="utf-8")
+            for filename in ("tool.log", "scratch.tmp", "runtime.lock"):
+                (profile / "artifacts" / filename).write_text("runtime only\n", encoding="utf-8")
+            result = harness.run_push(profile, runtime_remote)
+            require(result["status"] == "ok", "runtime exclusion push did not complete")
+            remote_paths = {obj["logical_path"] for obj in harness.list_remote_objects(runtime_remote)}
+            require("artifacts/report.txt" in remote_paths, "allowed artifact was not uploaded")
+            for marker in (
+                "agent.log",
+                "cache.bin",
+                "scratch.tmp",
+                "sync.lock",
+                "watcher-state.json",
+                "tool.log",
+                "runtime.lock",
+            ):
+                require(marker not in json.dumps(sorted(remote_paths)), f"runtime marker was uploaded: {marker}")
+            return "runtime logs, caches, tmp files, locks, and watcher state stay local"
+
+        def session_snapshot() -> str:
+            session_remote = harness.make_remote("session-snapshot")
+            source = harness.make_profile("session-source", session_remote)
+            target = harness.make_profile("session-target", session_remote)
+            session_id = harness.seed_session_fixture(source)
+            push = harness.run_push(source, session_remote)
+            require(push["status"] == "ok", "session snapshot push did not complete")
+            remote_objects = harness.list_remote_objects(session_remote)
+            session_objects = [obj for obj in remote_objects if obj["scope"] == "sessions"]
+            require(len(session_objects) == 1, "session snapshot was not uploaded once")
+            metadata = session_objects[0]
+            require(metadata["logical_path"].startswith("sessions/snapshots/"), "session snapshot logical path is not app-aware")
+            content = harness.read_remote_object_content(
+                session_remote, metadata["scope"], metadata["object_id"]
+            )
+            snapshot = json.loads(content.decode("utf-8"))
+            require(snapshot["session"]["id"] == session_id, "session id did not export")
+            require(len(snapshot["messages"]) == 2, "session messages did not export")
+            require("state.db" not in remote_payload(session_remote), "database filename leaked into remote payload")
+
+            pull = harness.run_pull(target, session_remote)
+            require(pull["status"] == "ok", "session snapshot pull did not complete")
+            require(not (target / "state.db").exists(), "pull created a state.db file")
+            imported_snapshots = harness.sync_stage_paths(target, "sessions")
+            require(
+                f"{metadata['object_id']}/snapshot.json" in imported_snapshots,
+                "pulled session snapshot was not stored as plugin history",
+            )
+            return "session snapshot JSON moves through sync without copying SQLite files"
+
         def local_remote_object_round_trip() -> str:
             from hermes_sync.manifest import revision_id, utc_now
             from hermes_sync.remotes import LocalFolderBackend, RemoteObjectMetadata
@@ -277,6 +430,12 @@ def run() -> dict:
             ("traversal_rejection", traversal_rejection),
             ("symlink_escape_rejection", symlink_escape_rejection),
             ("empty_profiles", empty_profiles),
+            ("config_export", config_export),
+            ("secret_exclusion", secret_exclusion),
+            ("db_file_exclusion", db_file_exclusion),
+            ("artifact_push_pull", artifact_push_pull),
+            ("runtime_file_exclusion", runtime_file_exclusion),
+            ("session_snapshot", session_snapshot),
             ("local_remote_object_round_trip", local_remote_object_round_trip),
             ("outbox_processing", outbox_processing),
             ("inbox_staging_before_import", inbox_staging_before_import),

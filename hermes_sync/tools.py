@@ -21,7 +21,7 @@ SYNC_STATUS_SCHEMA: Dict[str, Any] = {
 
 SYNC_NOW_SCHEMA: Dict[str, Any] = {
     "name": "sync_now",
-    "description": "Run one local-folder sync cycle for supported config and artifact scopes.",
+    "description": "Run one local-folder sync cycle for supported config, artifact, and session snapshot scopes.",
     "parameters": {
         "type": "object",
         "properties": {},

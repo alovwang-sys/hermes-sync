@@ -42,8 +42,9 @@ provider credentials.
 
 ### sessions
 
-Export session snapshots in version 1. Do not sync `state.db` or its WAL/SHM
-files. Other devices can import snapshots or show them as read-only history.
+Export session snapshots in version 1 through read-only SQLite queries. Do not
+sync `state.db` or its WAL/SHM files. Other devices store pulled snapshots as
+plugin-owned read-only history under `sync/sessions/`.
 
 ### memory
 

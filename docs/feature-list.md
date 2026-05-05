@@ -32,9 +32,9 @@ considered complete.
 | `push` | 2 | `/sync now`, future `hermes sync push` | Complete | Repeated push is idempotent and updates manifest revisions correctly. |
 | `pull` | 2 | `/sync now`, future `hermes sync pull` | Complete | Repeated pull is idempotent and imports through inbox. |
 | `once` | 2 | `/sync now`, `sync_now` tool, future `hermes sync once` | Complete | Second run makes no changes and leaves traces clean of secrets. |
-| Config sync | 2 | `config` scope | In progress | Allowed config syncs; dedicated key-level secret exclusion scenario remains. |
-| Artifact sync | 2 | `artifacts` scope | In progress | Text artifacts move between two temporary profiles; runtime-file-specific scenario remains. |
-| Session snapshots | 2 | `sessions` scope, `on_session_end` | Not started | Session JSON is exported; `state.db`, WAL, and SHM files are never synced. |
+| Config sync | 2 | `config` scope | Complete | Allowed config syncs; key-level secret-like config is skipped. |
+| Artifact sync | 2 | `artifacts` scope | Complete | Text artifacts move between two temporary profiles; runtime files stay local. |
+| Session snapshots | 2 | `sessions` scope, future `on_session_end` | Complete | Session JSON is exported through read-only SQLite; `state.db`, WAL, and SHM files are never synced. |
 | Tombstones | 4 | Manifest and remote metadata | Not started | Deletes create tombstones and import as deletes without silent loss. |
 | Conflict listing | 4 | `/sync conflicts`, `sync_list_conflicts` tool, future `hermes sync conflicts` | Not started | Concurrent edits produce deterministic conflict records. |
 | Conflict files | 4 | `conflicts/` | Not started | Failed text merges create `name.sync-conflict-YYYYMMDD-HHMMSS.ext`. |
@@ -50,14 +50,14 @@ considered complete.
 | --- | --- | --- |
 | Temporary profile factory | Complete | Creates isolated profile roots and refuses real `~/.hermes` by default. |
 | Temporary remote factory | Complete | Creates isolated local-folder remotes under the system temp directory. |
-| Fixture seeding | In progress | Seeds config, artifacts, and excluded files without secrets; session fixtures remain. |
+| Fixture seeding | Complete through Phase 2 | Seeds config, artifacts, excluded files, and sanitized session fixtures without secrets. |
 | Path guard | Complete | Rejects traversal, absolute escapes, and symlink escapes. |
 | Ignore-rule assertions | Complete | Proves blocked patterns never enter manifest, traces, or remote objects. |
 | Command adapter | In progress | Runs plugin APIs with structured results; top-level CLI waits on Hermes core. |
 | Manifest inspector | Complete | Reads `manifest.sqlite` and reports object state without mutation. |
 | Remote inspector | Complete | Lists remote objects and tombstones without importing them. |
 | Trace capture | In progress | Records phases, counts, and errors without object content or secrets. |
-| Scenario runner | Complete through Phase 2 MVP | Runs required scenarios from `docs/harness.md` repeatably. |
+| Scenario runner | Complete through Phase 2 snapshots | Runs required scenarios from `docs/harness.md` repeatably. |
 | Idempotency checks | Complete | Re-runs `push`, `pull`, and `once` and asserts no extra changes. |
 | Tombstone verifier | Not started | Confirms delete propagation uses explicit tombstones. |
 | Conflict injector | Not started | Creates concurrent edits and verifies conflict records and files. |

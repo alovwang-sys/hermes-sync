@@ -113,6 +113,76 @@ class SyncHarness:
         except OSError:
             pass
 
+    def seed_session_fixture(self, profile: Path) -> str:
+        import sqlite3
+
+        self._assert_inside_harness(profile)
+        db = profile / "state.db"
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    user_id TEXT,
+                    model TEXT,
+                    model_config TEXT,
+                    system_prompt TEXT,
+                    parent_session_id TEXT,
+                    started_at REAL NOT NULL,
+                    ended_at REAL,
+                    end_reason TEXT,
+                    message_count INTEGER DEFAULT 0,
+                    tool_call_count INTEGER DEFAULT 0,
+                    title TEXT
+                );
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    role TEXT NOT NULL,
+                    content TEXT,
+                    tool_call_id TEXT,
+                    tool_calls TEXT,
+                    tool_name TEXT,
+                    timestamp REAL NOT NULL,
+                    token_count INTEGER,
+                    finish_reason TEXT
+                );
+                """
+            )
+            session_id = "session-alpha"
+            conn.execute(
+                """
+                INSERT INTO sessions(
+                    id, source, user_id, model, model_config, system_prompt,
+                    parent_session_id, started_at, ended_at, end_reason,
+                    message_count, tool_call_count, title
+                )
+                VALUES(?, 'cli', 'harness-user', 'harness-model', ?, NULL, NULL,
+                       1000.0, 1002.0, 'completed', 2, 0, 'Harness session')
+                """,
+                (session_id, '{"temperature": 0}'),
+            )
+            conn.execute(
+                """
+                INSERT INTO messages(session_id, role, content, timestamp, token_count)
+                VALUES(?, 'user', 'Please summarize the sanitized fixture.', 1000.5, 6)
+                """,
+                (session_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO messages(session_id, role, content, timestamp, token_count, finish_reason)
+                VALUES(?, 'assistant', 'Sanitized fixture summary.', 1001.5, 4, 'stop')
+                """,
+                (session_id,),
+            )
+            conn.commit()
+            return session_id
+        finally:
+            conn.close()
+
     def load_plugin_manager(self, profile: Path):
         self._assert_inside_harness(profile)
         self._ensure_python_paths()
@@ -246,6 +316,13 @@ class SyncHarness:
         from hermes_sync.remotes import LocalFolderBackend
 
         return [metadata.as_dict() for metadata in LocalFolderBackend(remote).list_objects()]
+
+    def read_remote_object_content(self, remote: Path, scope: str, object_id: str) -> bytes:
+        self._ensure_python_paths()
+        self._assert_inside_harness(remote)
+        from hermes_sync.remotes import LocalFolderBackend
+
+        return LocalFolderBackend(remote).download_object(scope, object_id).content
 
     def list_remote_tombstones(self, remote: Path) -> list[Dict[str, Any]]:
         self._ensure_python_paths()

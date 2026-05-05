@@ -87,11 +87,14 @@ be added after session snapshots and tombstone propagation are reliable.
 
 Version 1 uses snapshots:
 
-1. `on_session_end` exports one session from `state.db`.
-2. The plugin writes `outbox/session-<id>.json`.
-3. `push` uploads the snapshot.
-4. Other devices `pull` the snapshot and import it or expose it as read-only
-   history.
+1. `push` exports sessions from `state.db` through a read-only SQLite
+   connection.
+2. The plugin stages deterministic JSON under `sync/outbox`.
+3. `push` uploads each snapshot as a `sessions` object.
+4. Other devices `pull` the snapshot into `sync/inbox` and store it under
+   plugin-owned `sync/sessions/` read-only history.
+5. A later `on_session_end` hook can enqueue only the ended session once the
+   continuous sync worker exists.
 
 The plugin must not synchronize `state.db` directly. SQLite WAL files are
 runtime coordination files, not portable sync objects.

@@ -25,10 +25,15 @@ from .scopes import (
     scan_profile,
     validate_profile_relative_path,
 )
+from .session_snapshots import (
+    export_session_snapshot_content,
+    export_session_snapshots,
+    is_session_snapshot_path,
+)
 
 SUPPORTED_SYNC_SCOPES: Dict[str, bool] = {
     "config": True,
-    "sessions": False,
+    "sessions": True,
     "memory": False,
     "artifacts": True,
     "skills": False,
@@ -57,10 +62,12 @@ def run_push(profile: Path | None = None, remote_path: Path | str | None = None)
     staging = {"outbox": 0, "inbox": 0, "skipped": 0}
     phases: list[Dict[str, Any]] = []
 
-    scan = scan_profile(profile_root, scopes=SUPPORTED_SYNC_SCOPES)
-    phases.append({"name": "scan", "status": "completed", "objects": len(scan.objects)})
-    for obj in scan.objects:
-        content = _read_export_content(profile_root, obj)
+    scan_objects, session_contents = _scan_export_objects(profile_root)
+    phases.append({"name": "scan", "status": "completed", "objects": len(scan_objects)})
+    for obj in scan_objects:
+        content = session_contents.get(obj.object_id) if obj.scope == "sessions" else None
+        if content is None:
+            content = _read_export_content(profile_root, obj)
         if content is None:
             staging["skipped"] += 1
             continue
@@ -210,6 +217,17 @@ def make_local_backend(remote_path: Path | str) -> LocalFolderBackend:
     return LocalFolderBackend(Path(remote_path))
 
 
+def _scan_export_objects(profile: Path) -> tuple[list[ScanObject], Dict[str, bytes]]:
+    scan = scan_profile(profile, scopes=SUPPORTED_SYNC_SCOPES)
+    objects = list(scan.objects)
+    session_contents: Dict[str, bytes] = {}
+    if SUPPORTED_SYNC_SCOPES.get("sessions", False):
+        for export in export_session_snapshots(profile):
+            objects.append(export.scan_object)
+            session_contents[export.scan_object.object_id] = export.content
+    return sorted(objects, key=lambda obj: (obj.scope, obj.logical_path)), session_contents
+
+
 def _profile_root(profile: Path | None) -> Path:
     if profile is not None:
         return Path(profile)
@@ -249,6 +267,10 @@ def _load_sync_config(profile: Path) -> Dict[str, str]:
 
 
 def _read_export_content(profile: Path, obj: ScanObject) -> bytes | None:
+    if obj.scope == "sessions":
+        if not is_session_snapshot_path(obj.logical_path):
+            return None
+        return export_session_snapshot_content(profile, obj.object_id)
     try:
         path = validate_profile_relative_path(profile, obj.logical_path)
     except PathSafetyError:
@@ -381,6 +403,8 @@ def _has_remote_rev(profile: Path, metadata: RemoteObjectMetadata) -> bool:
 
 
 def _import_object(profile: Path, metadata: RemoteObjectMetadata, content: bytes) -> str:
+    if metadata.scope == "sessions":
+        return _import_session_snapshot(profile, metadata, content)
     try:
         target = validate_profile_relative_path(profile, metadata.logical_path)
     except PathSafetyError:
@@ -397,6 +421,42 @@ def _import_object(profile: Path, metadata: RemoteObjectMetadata, content: bytes
             return "skipped"
         existing_hash = hashlib.sha256(existing_content).hexdigest()
         if existing_hash != row.get("content_hash"):
+            return "skipped"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".sync-tmp")
+    tmp.write_bytes(content)
+    tmp.replace(target)
+    return "imported"
+
+
+def _import_session_snapshot(
+    profile: Path,
+    metadata: RemoteObjectMetadata,
+    content: bytes,
+) -> str:
+    if not is_session_snapshot_path(metadata.logical_path):
+        return "skipped"
+    if hashlib.sha256(content).hexdigest() != metadata.content_hash:
+        return "skipped"
+    try:
+        loaded = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "skipped"
+    if not isinstance(loaded, dict) or loaded.get("snapshot_schema_version") != 1:
+        return "skipped"
+
+    sync_root = get_sync_dir(profile).resolve()
+    target = sync_root / "sessions" / metadata.object_id / "snapshot.json"
+    resolved = target.resolve(strict=False)
+    try:
+        resolved.relative_to(sync_root)
+    except ValueError:
+        return "skipped"
+    if target.exists():
+        try:
+            if target.read_bytes() == content:
+                return "unchanged"
+        except OSError:
             return "skipped"
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".sync-tmp")
