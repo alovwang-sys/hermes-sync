@@ -1,0 +1,48 @@
+name: hermes-sync
+version: 0.1.0
+description: "Obsidian-style app-aware sync for Hermes profiles"
+kind: standalone
+entrypoint: hermes_sync
+hooks:
+  - on_session_end
+  - post_tool_call
+  - post_llm_call
+provides_tools:
+  - sync_status
+  - sync_now
+  - sync_list_conflicts
+  - sync_restore_version
+cli_commands:
+  - name: sync
+    module: hermes_sync.cli
+    status: blocked_core_extension
+    note: "Requires Hermes core to wire generic plugin CLI commands before argparse parsing."
+slash_commands:
+  - name: sync
+    module: hermes_sync.cli
+tools:
+  - sync_status
+  - sync_now
+  - sync_list_conflicts
+  - sync_restore_version
+config:
+  enabled: false
+  remote: local
+  device_name: null
+  scopes:
+    config: true
+    sessions: true
+    memory: true
+    artifacts: true
+    skills: true
+    plugins: false
+    secrets: false
+  exclude:
+    - logs/**
+    - cache/**
+    - tmp/**
+    - locks/**
+    - "*.db"
+    - "*.db-wal"
+    - "*.db-shm"
+    - ".env"

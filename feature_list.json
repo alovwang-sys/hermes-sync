@@ -1,0 +1,479 @@
+{
+  "schema_version": 1,
+  "project": "hermes-sync",
+  "last_updated": "2026-05-06",
+  "status_values": {
+    "not_started": "No implementation or executable harness work exists yet.",
+    "specified": "The behavior is documented but not executable yet.",
+    "in_progress": "Code, tests, or harness work has started.",
+    "complete": "Implementation exists and required harness coverage passes.",
+    "blocked": "Progress depends on a missing design decision or dependency.",
+    "blocked_core_extension": "Progress needs a generic Hermes core extension, not sync logic in core."
+  },
+  "reviewed_sources": {
+    "hermes_agent": {
+      "path": "/home/amos/project/hermes-agent",
+      "git_short_sha": "32ae91091",
+      "reviewed_files": [
+        "AGENTS.md",
+        "pyproject.toml",
+        "hermes_cli/plugins.py",
+        "hermes_cli/main.py",
+        "hermes_cli/commands.py",
+        "cli.py",
+        "gateway/run.py",
+        "model_tools.py",
+        "run_agent.py",
+        "hermes_state.py",
+        "plugins/disk-cleanup/plugin.yaml",
+        "plugins/disk-cleanup/__init__.py"
+      ],
+      "findings": [
+        {
+          "id": "core.plugin.discovery",
+          "status": "usable",
+          "summary": "Hermes PluginManager discovers bundled, user, project, and entry-point plugins. Directory plugins need plugin.yaml and __init__.py with register(ctx)."
+        },
+        {
+          "id": "core.plugin.opt_in",
+          "status": "usable",
+          "summary": "Standalone user plugins are opt-in through plugins.enabled. The sync harness must test disabled, enabled, and missing-plugin states."
+        },
+        {
+          "id": "core.hooks",
+          "status": "usable",
+          "summary": "Existing hooks include post_tool_call, on_session_end, pre_llm_call, post_llm_call, on_session_start, and approval hooks."
+        },
+        {
+          "id": "core.slash_commands",
+          "status": "usable",
+          "summary": "PluginContext.register_command registers in-session slash commands; CLI and gateway dispatch plugin commands after built-ins and quick commands."
+        },
+        {
+          "id": "core.tools",
+          "status": "usable",
+          "summary": "PluginContext.register_tool delegates to tools.registry.register so plugin tools can appear with built-in tools."
+        },
+        {
+          "id": "core.top_level_cli",
+          "status": "blocked_core_extension",
+          "summary": "PluginContext.register_cli_command records commands, but hermes_cli/main.py currently wires only memory plugin CLI commands into argparse before parse. A generic plugin CLI bridge is needed for hermes sync."
+        },
+        {
+          "id": "core.session_state",
+          "status": "usable_readonly",
+          "summary": "Hermes persists sessions and messages in profile-aware SQLite state.db. Sync must export snapshots through sqlite3 or SessionDB APIs and must not sync state.db, WAL, or SHM files."
+        }
+      ]
+    },
+    "openai_docs": [
+      {
+        "id": "openai.docs_mcp",
+        "url": "https://developers.openai.com/learn/docs-mcp",
+        "summary": "OpenAI hosts a read-only Docs MCP server for developer documentation. This session did not expose that MCP resource, so official docs pages were used as fallback."
+      },
+      {
+        "id": "openai.agents_md",
+        "url": "https://developers.openai.com/codex/guides/agents-md",
+        "summary": "Codex reads AGENTS.md files and layers global and project instructions."
+      },
+      {
+        "id": "openai.apply_patch_harness",
+        "url": "https://developers.openai.com/api/docs/guides/tools-apply-patch",
+        "summary": "Harnesses should parse operations, validate paths, apply operations in a controlled workspace, report one result per operation, and make atomicity explicit."
+      },
+      {
+        "id": "openai.shell_harness",
+        "url": "https://developers.openai.com/api/docs/guides/tools-shell",
+        "summary": "Shell execution should be non-interactive, preserve failed outputs, return timeout outcomes, and keep network access tightly scoped."
+      }
+    ]
+  },
+  "execution_policy": {
+    "must_execute_harness": true,
+    "harness_roots": [
+      "temporary Hermes profiles",
+      "temporary local-folder remotes",
+      "sanitized fixtures",
+      "sanitized traces"
+    ],
+    "forbidden_by_default": [
+      "real ~/.hermes profiles",
+      "state.db files",
+      "state.db-wal files",
+      "state.db-shm files",
+      ".env files",
+      "API keys",
+      "provider credentials",
+      "logs",
+      "cache",
+      "tmp",
+      "lock files",
+      "runtime-only state"
+    ],
+    "json_validation_command": "python -m json.tool feature_list.json",
+    "required_execution_gates": [
+      "validate feature_list.json",
+      "create isolated profiles and remotes",
+      "seed sanitized fixtures",
+      "run path safety checks before sync actions",
+      "record structured command results",
+      "record sanitized traces",
+      "prove idempotency for push, pull, and once"
+    ]
+  },
+  "last_harness_run": {
+    "date": "2026-05-06",
+    "command": "python -m harness.run",
+    "status": "completed",
+    "completed_scenarios": [
+      "plugin_manifest_loads",
+      "slash_status_readonly",
+      "slash_router_parity",
+      "tool_schema_registration",
+      "tool_readonly_status",
+      "setup_creates_device_identity",
+      "manifest_schema_created",
+      "manifest_excludes_blocked_paths",
+      "path_allowlist",
+      "ignore_rules",
+      "traversal_rejection",
+      "symlink_escape_rejection",
+      "empty_profiles"
+    ]
+  },
+  "features": [
+    {
+      "id": "plugin.metadata",
+      "phase": 0,
+      "surface": ["plugin.yaml"],
+      "status": "complete",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["plugin_manifest_loads"]
+    },
+    {
+      "id": "slash.sync",
+      "phase": 1,
+      "surface": ["/sync status", "/sync now", "/sync pause", "/sync conflicts"],
+      "status": "in_progress",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["slash_status_readonly", "slash_router_parity"]
+    },
+    {
+      "id": "tools.sync",
+      "phase": 1,
+      "surface": ["sync_status", "sync_now", "sync_list_conflicts", "sync_restore_version"],
+      "status": "in_progress",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["tool_schema_registration", "tool_readonly_status"]
+    },
+    {
+      "id": "cli.sync",
+      "phase": 1,
+      "surface": ["hermes sync setup", "hermes sync status", "hermes sync push", "hermes sync pull", "hermes sync once"],
+      "status": "blocked_core_extension",
+      "core_compatibility": "needs_generic_plugin_cli_bridge",
+      "harness_scenarios": ["core_cli_bridge_contract"]
+    },
+    {
+      "id": "device.identity",
+      "phase": 1,
+      "surface": ["sync/device.json"],
+      "status": "complete",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["setup_creates_device_identity"]
+    },
+    {
+      "id": "manifest.sqlite",
+      "phase": 1,
+      "surface": ["sync/manifest.sqlite"],
+      "status": "complete",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["manifest_schema_created", "manifest_excludes_blocked_paths"]
+    },
+    {
+      "id": "scope.scanner",
+      "phase": 1,
+      "surface": ["config", "sessions", "memory", "artifacts", "skills", "plugins", "secrets"],
+      "status": "complete",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["path_allowlist", "ignore_rules", "traversal_rejection", "symlink_escape_rejection"]
+    },
+    {
+      "id": "local.remote",
+      "phase": 2,
+      "surface": ["RemoteBackend local-folder"],
+      "status": "not_started",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["local_remote_object_round_trip"]
+    },
+    {
+      "id": "outbox.inbox",
+      "phase": 2,
+      "surface": ["sync/outbox", "sync/inbox"],
+      "status": "not_started",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["outbox_processing", "inbox_staging_before_import"]
+    },
+    {
+      "id": "push.pull.once",
+      "phase": 2,
+      "surface": ["push", "pull", "once"],
+      "status": "not_started",
+      "core_compatibility": "usable_after_entrypoint_exists",
+      "harness_scenarios": ["push_idempotent", "pull_idempotent", "once_idempotent"]
+    },
+    {
+      "id": "config.sync",
+      "phase": 2,
+      "surface": ["config scope"],
+      "status": "not_started",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["config_export", "secret_exclusion"]
+    },
+    {
+      "id": "artifact.sync",
+      "phase": 2,
+      "surface": ["artifacts scope", "post_tool_call"],
+      "status": "not_started",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["artifact_push_pull", "runtime_file_exclusion"]
+    },
+    {
+      "id": "session.snapshots",
+      "phase": 2,
+      "surface": ["sessions scope", "on_session_end", "state.db read-only export"],
+      "status": "not_started",
+      "core_compatibility": "usable_for_snapshots",
+      "harness_scenarios": ["session_snapshot", "db_file_exclusion"]
+    },
+    {
+      "id": "continuous.sync",
+      "phase": 3,
+      "surface": ["continuous worker", "/sync pause"],
+      "status": "not_started",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["continuous_sync", "pause_state_local_only"]
+    },
+    {
+      "id": "tombstones",
+      "phase": 4,
+      "surface": ["manifest tombstones", "remote tombstones"],
+      "status": "not_started",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["tombstone_delete_propagation"]
+    },
+    {
+      "id": "conflicts",
+      "phase": 4,
+      "surface": ["/sync conflicts", "sync_list_conflicts", "sync/conflicts"],
+      "status": "not_started",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["text_conflict", "binary_conflict"]
+    },
+    {
+      "id": "version.restore",
+      "phase": 4,
+      "surface": ["sync_restore_version", "version history"],
+      "status": "not_started",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["restore_previous_version"]
+    },
+    {
+      "id": "remote.backends",
+      "phase": 5,
+      "surface": ["Git", "WebDAV", "S3/R2"],
+      "status": "not_started",
+      "core_compatibility": "usable_behind_remote_backend_protocol",
+      "harness_scenarios": ["backend_conformance"]
+    },
+    {
+      "id": "core.hooks.future",
+      "phase": 6,
+      "surface": ["on_message_persisted", "on_session_updated", "on_artifact_created"],
+      "status": "blocked_core_extension",
+      "core_compatibility": "proposal_only",
+      "harness_scenarios": ["core_hook_contract"]
+    }
+  ],
+  "harness_scenarios": [
+    {
+      "id": "plugin_manifest_loads",
+      "status": "complete",
+      "expected": "Plugin manifest metadata is parseable and compatible with Hermes plugin discovery."
+    },
+    {
+      "id": "slash_status_readonly",
+      "status": "complete",
+      "expected": "/sync status reports scan state without mutating profile data or remote data."
+    },
+    {
+      "id": "slash_router_parity",
+      "status": "complete",
+      "expected": "/sync subcommands route to the same implementation contracts as plugin tools and harness adapter calls."
+    },
+    {
+      "id": "tool_schema_registration",
+      "status": "complete",
+      "expected": "sync_* tools register through the Hermes tool registry with stable schemas."
+    },
+    {
+      "id": "tool_readonly_status",
+      "status": "complete",
+      "expected": "sync_status returns status data without upload, import, delete, or profile mutation beyond safe local sync metadata initialization."
+    },
+    {
+      "id": "core_cli_bridge_contract",
+      "status": "blocked_core_extension",
+      "expected": "Hermes core exposes generic plugin CLI-command registration before argparse parsing."
+    },
+    {
+      "id": "setup_creates_device_identity",
+      "status": "complete",
+      "expected": "Setup creates device.json with stable per-profile identity under an isolated temporary profile."
+    },
+    {
+      "id": "manifest_schema_created",
+      "status": "complete",
+      "expected": "Setup creates manifest.sqlite with the required object, revision, dirty, tombstone, and conflict fields."
+    },
+    {
+      "id": "manifest_excludes_blocked_paths",
+      "status": "complete",
+      "expected": "Manifest rows are never created for blocked files or runtime-only paths."
+    },
+    {
+      "id": "path_allowlist",
+      "status": "complete",
+      "expected": "Only explicit sync scopes are scanned."
+    },
+    {
+      "id": "traversal_rejection",
+      "status": "complete",
+      "expected": "Traversal, absolute escapes, and symlink escapes are rejected before file operations."
+    },
+    {
+      "id": "symlink_escape_rejection",
+      "status": "complete",
+      "expected": "Symlinks that resolve outside temporary profile or remote roots are rejected."
+    },
+    {
+      "id": "ignore_rules",
+      "status": "complete",
+      "expected": "Blocked patterns never enter manifest, remote objects, fixtures, traces, or docs examples."
+    },
+    {
+      "id": "local_remote_object_round_trip",
+      "status": "not_started",
+      "expected": "The local-folder backend can upload, list, download, and tombstone allowed objects in a temporary remote."
+    },
+    {
+      "id": "outbox_processing",
+      "status": "not_started",
+      "expected": "Push processes outbox objects only after scan and manifest updates succeed."
+    },
+    {
+      "id": "inbox_staging_before_import",
+      "status": "not_started",
+      "expected": "Pull stages remote objects into inbox before applying user-visible imports."
+    },
+    {
+      "id": "empty_profiles",
+      "status": "complete",
+      "expected": "Status reports no dirty objects."
+    },
+    {
+      "id": "config_export",
+      "status": "not_started",
+      "expected": "Non-secret config appears in outbox."
+    },
+    {
+      "id": "secret_exclusion",
+      "status": "not_started",
+      "expected": ".env and token-like keys are skipped everywhere."
+    },
+    {
+      "id": "db_file_exclusion",
+      "status": "not_started",
+      "expected": "state.db, WAL, and SHM files are never synced as files."
+    },
+    {
+      "id": "artifact_push_pull",
+      "status": "not_started",
+      "expected": "Text artifact arrives on the second isolated profile."
+    },
+    {
+      "id": "runtime_file_exclusion",
+      "status": "not_started",
+      "expected": "Logs, caches, tmp files, lock files, and watcher state remain local."
+    },
+    {
+      "id": "session_snapshot",
+      "status": "not_started",
+      "expected": "Session JSON is exported from SQLite without copying SQLite files."
+    },
+    {
+      "id": "push_idempotent",
+      "status": "not_started",
+      "expected": "Second push creates no additional remote changes."
+    },
+    {
+      "id": "pull_idempotent",
+      "status": "not_started",
+      "expected": "Second pull creates no additional local changes."
+    },
+    {
+      "id": "once_idempotent",
+      "status": "not_started",
+      "expected": "Second once run makes no changes."
+    },
+    {
+      "id": "tombstone_delete_propagation",
+      "status": "not_started",
+      "expected": "Deletes create tombstones and import as explicit deletes."
+    },
+    {
+      "id": "text_conflict",
+      "status": "not_started",
+      "expected": "Concurrent text edits create deterministic conflict records and conflict files."
+    },
+    {
+      "id": "binary_conflict",
+      "status": "not_started",
+      "expected": "Latest binary file wins while preserving a conflict copy."
+    },
+    {
+      "id": "continuous_sync",
+      "status": "not_started",
+      "expected": "Allowed changes sync after one interval and runtime files stay local."
+    },
+    {
+      "id": "pause_state_local_only",
+      "status": "not_started",
+      "expected": "Pause and resume state is stored only on the local device and never uploaded."
+    },
+    {
+      "id": "restore_previous_version",
+      "status": "not_started",
+      "expected": "A previous object version can be restored without corrupting manifest state."
+    },
+    {
+      "id": "backend_conformance",
+      "status": "not_started",
+      "expected": "All remote backends pass the same object, manifest, tombstone, conflict, and idempotency contract."
+    },
+    {
+      "id": "core_hook_contract",
+      "status": "blocked_core_extension",
+      "expected": "Future session-level hooks are generic Hermes plugin capabilities and contain no sync policy."
+    }
+  ],
+  "immediate_next_actions": [
+    "Implement the local-folder RemoteBackend behind a small protocol.",
+    "Add outbox and inbox staging under sync/ without importing user-visible data until object operations succeed.",
+    "Implement push, pull, and once against temporary profiles and temporary local remotes.",
+    "Export session snapshots from state.db through sqlite3 reads without syncing SQLite files.",
+    "Extend the harness to prove push_idempotent, pull_idempotent, and once_idempotent.",
+    "Treat top-level hermes sync as blocked until Hermes core exposes generic plugin CLI registration before argparse parsing."
+  ]
+}
