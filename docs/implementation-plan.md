@@ -48,14 +48,23 @@ Exit criteria:
 - Implement `push`, `pull`, and `once`.
 - Export safe config objects.
 - Export artifacts.
+- Stage push objects under `sync/outbox`.
+- Stage pull objects under `sync/inbox` before import.
 - Export session snapshots from `state.db`.
 - Import pulled objects into inbox first, then apply.
 
 Exit criteria:
 
-- Two temporary profiles can exchange allowed artifacts.
+- Two temporary profiles can exchange allowed config and artifacts through a
+  local-folder remote.
+- Repeated `push`, `pull`, and `once` runs are idempotent.
+- No blocked paths or runtime files enter manifests, remotes, or traces.
+- Secret-like config export is guarded; dedicated key-level secret harness
+  coverage remains before broader config sync is complete.
+
+Remaining Phase 2 snapshot criteria:
+
 - Session snapshots move between profiles without syncing SQLite files.
-- Running `once` twice is idempotent.
 
 ## Phase 3: Continuous Sync
 

@@ -126,11 +126,16 @@ For example:
 | Scenario | Expected Result |
 | --- | --- |
 | Empty profiles | `status` reports no dirty objects. |
+| Local remote object round trip | Local-folder backend uploads, lists, downloads, and tombstones an allowed object. |
+| Outbox processing | `push` stages outbox objects after scan and manifest updates, then uploads them. |
+| Inbox staging before import | `pull` stages remote objects into inbox before applying user-visible imports. |
 | Config export | Non-secret config appears in outbox. |
 | Secret exclusion | `.env` and token-like keys are skipped. |
 | DB exclusion | `state.db` and WAL/SHM files are skipped. |
 | Artifact push/pull | Text artifact arrives on second device. |
 | Session snapshot | Session JSON is exported, not database files. |
+| Idempotent push | Second `push` creates no extra remote changes. |
+| Idempotent pull | Second `pull` creates no extra local changes. |
 | Idempotent once | Second run makes no changes. |
 | Tombstone | Delete creates a tombstone and imports as delete. |
 | Text conflict | Conflict file is created when merge fails. |

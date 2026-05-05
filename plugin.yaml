@@ -28,6 +28,7 @@ tools:
 config:
   enabled: false
   remote: local
+  remote_path: null
   device_name: null
   scopes:
     config: true

@@ -124,7 +124,7 @@
   },
   "last_harness_run": {
     "date": "2026-05-06",
-    "command": "python -m harness.run",
+    "command": "env PYTHONDONTWRITEBYTECODE=1 python -m harness.run",
     "status": "completed",
     "completed_scenarios": [
       "plugin_manifest_loads",
@@ -139,7 +139,13 @@
       "ignore_rules",
       "traversal_rejection",
       "symlink_escape_rejection",
-      "empty_profiles"
+      "empty_profiles",
+      "local_remote_object_round_trip",
+      "outbox_processing",
+      "inbox_staging_before_import",
+      "push_idempotent",
+      "pull_idempotent",
+      "once_idempotent"
     ]
   },
   "features": [
@@ -203,7 +209,7 @@
       "id": "local.remote",
       "phase": 2,
       "surface": ["RemoteBackend local-folder"],
-      "status": "not_started",
+      "status": "complete",
       "core_compatibility": "usable",
       "harness_scenarios": ["local_remote_object_round_trip"]
     },
@@ -211,7 +217,7 @@
       "id": "outbox.inbox",
       "phase": 2,
       "surface": ["sync/outbox", "sync/inbox"],
-      "status": "not_started",
+      "status": "complete",
       "core_compatibility": "usable",
       "harness_scenarios": ["outbox_processing", "inbox_staging_before_import"]
     },
@@ -219,25 +225,25 @@
       "id": "push.pull.once",
       "phase": 2,
       "surface": ["push", "pull", "once"],
-      "status": "not_started",
-      "core_compatibility": "usable_after_entrypoint_exists",
+      "status": "complete",
+      "core_compatibility": "usable_via_plugin_api_and_sync_now_top_level_cli_blocked",
       "harness_scenarios": ["push_idempotent", "pull_idempotent", "once_idempotent"]
     },
     {
       "id": "config.sync",
       "phase": 2,
       "surface": ["config scope"],
-      "status": "not_started",
+      "status": "in_progress",
       "core_compatibility": "usable",
-      "harness_scenarios": ["config_export", "secret_exclusion"]
+      "harness_scenarios": ["outbox_processing", "config_export", "secret_exclusion"]
     },
     {
       "id": "artifact.sync",
       "phase": 2,
       "surface": ["artifacts scope", "post_tool_call"],
-      "status": "not_started",
+      "status": "in_progress",
       "core_compatibility": "usable",
-      "harness_scenarios": ["artifact_push_pull", "runtime_file_exclusion"]
+      "harness_scenarios": ["inbox_staging_before_import", "artifact_push_pull", "runtime_file_exclusion"]
     },
     {
       "id": "session.snapshots",
@@ -364,17 +370,17 @@
     },
     {
       "id": "local_remote_object_round_trip",
-      "status": "not_started",
+      "status": "complete",
       "expected": "The local-folder backend can upload, list, download, and tombstone allowed objects in a temporary remote."
     },
     {
       "id": "outbox_processing",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Push processes outbox objects only after scan and manifest updates succeed."
     },
     {
       "id": "inbox_staging_before_import",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Pull stages remote objects into inbox before applying user-visible imports."
     },
     {
@@ -414,17 +420,17 @@
     },
     {
       "id": "push_idempotent",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Second push creates no additional remote changes."
     },
     {
       "id": "pull_idempotent",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Second pull creates no additional local changes."
     },
     {
       "id": "once_idempotent",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Second once run makes no changes."
     },
     {
@@ -469,11 +475,10 @@
     }
   ],
   "immediate_next_actions": [
-    "Implement the local-folder RemoteBackend behind a small protocol.",
-    "Add outbox and inbox staging under sync/ without importing user-visible data until object operations succeed.",
-    "Implement push, pull, and once against temporary profiles and temporary local remotes.",
+    "Add dedicated config_export and secret_exclusion harness scenarios for sanitized config handling.",
+    "Add dedicated artifact_push_pull and runtime_file_exclusion harness scenarios around post-tool artifacts.",
     "Export session snapshots from state.db through sqlite3 reads without syncing SQLite files.",
-    "Extend the harness to prove push_idempotent, pull_idempotent, and once_idempotent.",
+    "Implement tombstone propagation and conflict creation on top of the local-folder backend.",
     "Treat top-level hermes sync as blocked until Hermes core exposes generic plugin CLI registration before argparse parsing."
   ]
 }

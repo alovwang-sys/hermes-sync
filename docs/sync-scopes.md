@@ -9,6 +9,7 @@ an importer, ignore rules, and conflict behavior.
 sync:
   enabled: true
   remote: local
+  remote_path: /path/to/local-folder-remote
   device_name: amos-laptop
 
   scopes:

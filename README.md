@@ -88,15 +88,19 @@ Planned tools:
 - `sync_list_conflicts`
 - `sync_restore_version`
 
-## First Milestone
+## Current Implementation
 
-The first milestone is read-only:
+The implemented surfaces are:
 
 - register `/sync status`
 - register `sync_status`
 - create `device.json`
 - initialize `manifest.sqlite`
 - scan configured scopes without uploading or importing anything
+- implement a local-folder `RemoteBackend`
+- stage outgoing objects under `sync/outbox`
+- stage incoming objects under `sync/inbox` before import
+- run `push`, `pull`, and `once` for supported config/artifact objects
 - keep top-level `hermes sync status` as future work until Hermes core exposes
   a generic plugin CLI-command bridge
 

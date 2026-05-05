@@ -156,6 +156,36 @@ class SyncHarness:
 
             return get_status()
 
+    def run_push(self, profile: Path, remote: Path | None = None) -> Dict[str, Any]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(profile)
+        if remote is not None:
+            self._assert_inside_harness(remote)
+        with self.hermes_env(profile):
+            from hermes_sync.sync_engine import run_push
+
+            return run_push(profile, remote)
+
+    def run_pull(self, profile: Path, remote: Path | None = None) -> Dict[str, Any]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(profile)
+        if remote is not None:
+            self._assert_inside_harness(remote)
+        with self.hermes_env(profile):
+            from hermes_sync.sync_engine import run_pull
+
+            return run_pull(profile, remote)
+
+    def run_once(self, profile: Path, remote: Path | None = None) -> Dict[str, Any]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(profile)
+        if remote is not None:
+            self._assert_inside_harness(remote)
+        with self.hermes_env(profile):
+            from hermes_sync.sync_engine import run_once
+
+            return run_once(profile, remote)
+
     def snapshot_user_tree(self, profile: Path) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
         for path in sorted(profile.rglob("*")):
@@ -194,6 +224,42 @@ class SyncHarness:
         finally:
             conn.close()
 
+    def manifest_objects(self, profile: Path) -> list[Dict[str, Any]]:
+        import sqlite3
+
+        db = profile / "sync" / "manifest.sqlite"
+        if not db.exists():
+            return []
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        try:
+            return [
+                {key: row[key] for key in row.keys()}
+                for row in conn.execute("SELECT * FROM objects ORDER BY scope, logical_path")
+            ]
+        finally:
+            conn.close()
+
+    def list_remote_objects(self, remote: Path) -> list[Dict[str, Any]]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(remote)
+        from hermes_sync.remotes import LocalFolderBackend
+
+        return [metadata.as_dict() for metadata in LocalFolderBackend(remote).list_objects()]
+
+    def list_remote_tombstones(self, remote: Path) -> list[Dict[str, Any]]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(remote)
+        from hermes_sync.remotes import LocalFolderBackend
+
+        return [metadata.as_dict() for metadata in LocalFolderBackend(remote).list_tombstones()]
+
+    def sync_stage_paths(self, profile: Path, stage: str) -> list[str]:
+        root = profile / "sync" / stage
+        if not root.exists():
+            return []
+        return sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file())
+
     def validate_traversal_rejected(self, profile: Path) -> None:
         self._ensure_python_paths()
         with self.hermes_env(profile):
@@ -216,7 +282,7 @@ class SyncHarness:
             "scenario_count": len(results),
             "scenarios": [r.as_dict() for r in results],
         }
-        path = self.traces_root / "phase1-trace.json"
+        path = self.traces_root / "phase2-trace.json"
         path.write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return path
 

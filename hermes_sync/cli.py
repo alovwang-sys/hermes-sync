@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from .status import get_status
+from .sync_engine import SyncConfigurationError, run_once
 
 
 def route_sync_command(raw_args: str) -> Dict[str, Any]:
@@ -12,11 +13,26 @@ def route_sync_command(raw_args: str) -> Dict[str, Any]:
     subcommand = argv[0].lower() if argv else "status"
     if subcommand in {"status", "st"}:
         return get_status()
-    if subcommand in {"now", "pause", "conflicts"}:
+    if subcommand in {"now", "once"}:
+        try:
+            return run_once()
+        except SyncConfigurationError as exc:
+            return {
+                "status": "error",
+                "subcommand": subcommand,
+                "message": str(exc),
+                "actions": {
+                    "uploaded": 0,
+                    "downloaded": 0,
+                    "imported": 0,
+                    "deleted": 0,
+                },
+            }
+    if subcommand in {"pause", "conflicts"}:
         return {
             "status": "not_implemented",
             "subcommand": subcommand,
-            "message": "This sync subcommand is registered but not implemented in phase 1.",
+            "message": "This sync subcommand is registered but is not implemented yet.",
             "actions": {
                 "uploaded": 0,
                 "downloaded": 0,
@@ -63,6 +79,24 @@ def format_status(data: Dict[str, Any]) -> str:
 
 def handle_sync_command(raw_args: str) -> str:
     data = route_sync_command(raw_args)
+    if data.get("status") == "ok" and data.get("command") in {"push", "pull", "once"}:
+        actions = data["actions"]
+        staging = data.get("staging", {})
+        return "\n".join(
+            [
+                "Hermes Sync now",
+                (
+                    "Actions: "
+                    f"{actions['uploaded']} uploaded, {actions['downloaded']} downloaded, "
+                    f"{actions['imported']} imported, {actions['deleted']} deleted"
+                ),
+                (
+                    "Staging: "
+                    f"{staging.get('outbox', 0)} outbox, {staging.get('inbox', 0)} inbox, "
+                    f"{staging.get('skipped', 0)} skipped"
+                ),
+            ]
+        )
     if data.get("status") == "ok":
         return format_status(data)
     if data.get("status") == "not_implemented":

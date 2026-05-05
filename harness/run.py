@@ -1,7 +1,8 @@
-"""Run the first executable hermes-sync harness scenarios."""
+"""Run executable hermes-sync harness scenarios."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Callable
@@ -167,6 +168,101 @@ def run() -> dict:
             require(data["actions"] == {"uploaded": 0, "downloaded": 0, "imported": 0, "deleted": 0}, "empty status ran sync actions")
             return "empty isolated profile reports no dirty objects"
 
+        def local_remote_object_round_trip() -> str:
+            from hermes_sync.manifest import revision_id, utc_now
+            from hermes_sync.remotes import LocalFolderBackend, RemoteObjectMetadata
+
+            roundtrip_remote = harness.make_remote("round-trip")
+            backend = LocalFolderBackend(roundtrip_remote)
+            content = b"Local backend round trip fixture.\n"
+            object_id = hashlib.sha256(b"artifacts:roundtrip.txt").hexdigest()
+            content_hash = hashlib.sha256(content).hexdigest()
+            remote_rev = revision_id("artifacts", object_id, content_hash)
+            metadata = RemoteObjectMetadata(
+                scope="artifacts",
+                object_id=object_id,
+                logical_path="artifacts/roundtrip.txt",
+                content_hash=content_hash,
+                remote_rev=remote_rev,
+                size_bytes=len(content),
+                mtime=0.0,
+                updated_at=utc_now(),
+                source_device_id="harness",
+            )
+            backend.upload_object(metadata, content)
+            listed = backend.list_objects()
+            require(len(listed) == 1, "uploaded object was not listed")
+            downloaded = backend.download_object("artifacts", object_id)
+            require(downloaded.content == content, "downloaded content did not match upload")
+            backend.put_tombstone(metadata)
+            require(not backend.list_objects(), "tombstoned object remained active")
+            tombstones = backend.list_tombstones()
+            require(len(tombstones) == 1, "tombstone was not listed")
+            return "local-folder backend uploads, lists, downloads, and tombstones one object"
+
+        def outbox_processing() -> str:
+            result = harness.run_push(device_a, remote)
+            require(result["status"] == "ok", "push did not complete")
+            require(result["actions"]["uploaded"] >= 2, "push did not upload config and artifact objects")
+            require(result["staging"]["outbox"] >= 2, "push did not stage outbox objects")
+            remote_objects = harness.list_remote_objects(remote)
+            remote_paths = {obj["logical_path"] for obj in remote_objects}
+            require("config.yaml" in remote_paths, "allowed config was not uploaded")
+            require("artifacts/report.txt" in remote_paths, "allowed artifact was not uploaded")
+            require("skills/example/SKILL.md" not in remote_paths, "unsupported skill scope was uploaded")
+            require("memories/notes.json" not in remote_paths, "unsupported memory scope was uploaded")
+            payload = json.dumps(remote_objects, sort_keys=True)
+            for marker in BLOCKED_MARKERS:
+                require(marker not in payload, f"remote metadata included excluded marker {marker}")
+            manifest_rows = harness.manifest_objects(device_a)
+            dirty = [row for row in manifest_rows if row["dirty"]]
+            require(not dirty, "push left uploaded objects dirty in manifest")
+            outbox_paths = harness.sync_stage_paths(device_a, "outbox")
+            require(any(path.endswith("/metadata.json") for path in outbox_paths), "outbox metadata was not staged")
+            require(any(path.endswith("/content") for path in outbox_paths), "outbox content was not staged")
+            return "push stages outbox after scan, uploads allowed objects, and marks manifest clean"
+
+        def inbox_staging_before_import() -> str:
+            result = harness.run_pull(device_b, remote)
+            require(result["status"] == "ok", "pull did not complete")
+            require(result["actions"]["downloaded"] >= 2, "pull did not download remote objects")
+            require(result["actions"]["imported"] >= 1, "pull did not import the remote artifact")
+            phase_names = [phase["name"] for phase in result["phases"]]
+            require(phase_names.index("stage_inbox") < phase_names.index("import"), "pull imported before inbox staging")
+            require((device_b / "artifacts" / "report.txt").exists(), "remote artifact was not imported")
+            inbox_paths = harness.sync_stage_paths(device_b, "inbox")
+            require(any(path.endswith("/metadata.json") for path in inbox_paths), "inbox metadata was not staged")
+            require(any(path.endswith("/content") for path in inbox_paths), "inbox content was not staged")
+            return "pull stages inbox before applying imports"
+
+        def push_idempotent() -> str:
+            result = harness.run_push(device_a, remote)
+            require(result["status"] == "ok", "second push did not complete")
+            require(result["actions"]["uploaded"] == 0, "second push uploaded extra objects")
+            require(result["staging"]["outbox"] == 0, "second push restaged clean objects")
+            return "second push created no additional remote changes"
+
+        def pull_idempotent() -> str:
+            result = harness.run_pull(device_b, remote)
+            require(result["status"] == "ok", "second pull did not complete")
+            require(result["actions"]["downloaded"] == 0, "second pull downloaded extra objects")
+            require(result["actions"]["imported"] == 0, "second pull imported extra objects")
+            require(result["staging"]["inbox"] == 0, "second pull restaged clean objects")
+            return "second pull created no additional local changes"
+
+        def once_idempotent() -> str:
+            once_artifact = device_a / "artifacts" / "once.txt"
+            once_artifact.write_text("Once idempotency fixture.\n", encoding="utf-8")
+            first = harness.run_once(device_a, remote)
+            require(first["status"] == "ok", "first once did not complete")
+            require(first["actions"]["uploaded"] >= 1, "first once did not upload the new artifact")
+            second = harness.run_once(device_a, remote)
+            require(second["status"] == "ok", "second once did not complete")
+            require(second["actions"] == {"uploaded": 0, "downloaded": 0, "imported": 0, "deleted": 0}, "second once made extra changes")
+            require(second["staging"]["outbox"] == 0, "second once restaged outbox objects")
+            require(second["staging"]["inbox"] == 0, "second once restaged inbox objects")
+            return "second once run makes no changes"
+
         scenarios: list[tuple[str, Callable[[], str]]] = [
             ("plugin_manifest_loads", plugin_manifest_loads),
             ("slash_status_readonly", slash_status_readonly),
@@ -181,6 +277,12 @@ def run() -> dict:
             ("traversal_rejection", traversal_rejection),
             ("symlink_escape_rejection", symlink_escape_rejection),
             ("empty_profiles", empty_profiles),
+            ("local_remote_object_round_trip", local_remote_object_round_trip),
+            ("outbox_processing", outbox_processing),
+            ("inbox_staging_before_import", inbox_staging_before_import),
+            ("push_idempotent", push_idempotent),
+            ("pull_idempotent", pull_idempotent),
+            ("once_idempotent", once_idempotent),
         ]
         for scenario_id, fn in scenarios:
             results.append(_result(scenario_id, fn))
@@ -189,7 +291,7 @@ def run() -> dict:
         status = "completed" if all(r.status == "complete" for r in results) else "failed"
         return {
             "status": status,
-            "harness": "phase1",
+            "harness": "phase2",
             "scenario_count": len(results),
             "trace": str(trace_path),
             "results": [r.as_dict() for r in results],

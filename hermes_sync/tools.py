@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
+from .manifest import list_conflicts
 from .status import get_status
+from .sync_engine import SyncConfigurationError, run_once
 
 SYNC_STATUS_SCHEMA: Dict[str, Any] = {
     "name": "sync_status",
@@ -19,7 +21,7 @@ SYNC_STATUS_SCHEMA: Dict[str, Any] = {
 
 SYNC_NOW_SCHEMA: Dict[str, Any] = {
     "name": "sync_now",
-    "description": "Run one sync cycle. Phase 1 registers the tool but performs no sync actions.",
+    "description": "Run one local-folder sync cycle for supported config and artifact scopes.",
     "parameters": {
         "type": "object",
         "properties": {},
@@ -29,7 +31,7 @@ SYNC_NOW_SCHEMA: Dict[str, Any] = {
 
 SYNC_LIST_CONFLICTS_SCHEMA: Dict[str, Any] = {
     "name": "sync_list_conflicts",
-    "description": "List pending sync conflicts. Phase 1 returns an empty list.",
+    "description": "List pending sync conflicts.",
     "parameters": {
         "type": "object",
         "properties": {},
@@ -61,17 +63,20 @@ def sync_status_tool(args: Dict[str, Any] | None = None, **_: Any) -> str:
 
 
 def sync_now_tool(args: Dict[str, Any] | None = None, **_: Any) -> str:
-    return _json(
-        {
-            "status": "not_implemented",
-            "message": "sync_now is registered but push/pull/once are not implemented in phase 1.",
-            "actions": {"uploaded": 0, "downloaded": 0, "imported": 0, "deleted": 0},
-        }
-    )
+    try:
+        return _json(run_once())
+    except SyncConfigurationError as exc:
+        return _json(
+            {
+                "status": "error",
+                "message": str(exc),
+                "actions": {"uploaded": 0, "downloaded": 0, "imported": 0, "deleted": 0},
+            }
+        )
 
 
 def sync_list_conflicts_tool(args: Dict[str, Any] | None = None, **_: Any) -> str:
-    return _json({"status": "ok", "conflicts": []})
+    return _json({"status": "ok", "conflicts": list_conflicts()})
 
 
 def sync_restore_version_tool(args: Dict[str, Any] | None = None, **_: Any) -> str:

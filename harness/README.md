@@ -12,17 +12,18 @@ Validate `feature_list.json` before any executable harness run:
 python -m json.tool feature_list.json
 ```
 
-Run the current phase-1 harness:
+Run the current harness:
 
 ```bash
-python -m harness.run
+env PYTHONDONTWRITEBYTECODE=1 python -m harness.run
 ```
 
 The harness creates temporary Hermes profiles, installs this plugin into those
 profiles through Hermes' directory-plugin shape, creates a temporary
 local-folder remote, seeds sanitized fixtures, and asserts that `/sync status`
-and `sync_status` do not upload, import, delete, or mutate user data outside
-plugin-owned `sync/` metadata.
+and `sync_status` remain read-only while `push`, `pull`, and `once` exchange
+only supported config/artifact objects through `sync/outbox`, `sync/inbox`, and
+the temporary remote.
 
 See `docs/harness.md` for the process, adapter contract, required scenarios,
 and acceptance checklist.

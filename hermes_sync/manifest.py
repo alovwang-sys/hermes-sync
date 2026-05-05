@@ -212,6 +212,233 @@ def inspect_manifest(profile: Path | None = None) -> Dict[str, Any]:
     }
 
 
+def _row_to_dict(row: sqlite3.Row | None) -> Dict[str, Any] | None:
+    if row is None:
+        return None
+    return {key: row[key] for key in row.keys()}
+
+
+def get_manifest_object(
+    profile: Path | None,
+    scope: str,
+    object_id: str,
+) -> Dict[str, Any] | None:
+    manifest_path = ensure_manifest(profile)
+    conn = sqlite3.connect(str(manifest_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT * FROM objects WHERE scope = ? AND object_id = ?",
+            (scope, object_id),
+        ).fetchone()
+        return _row_to_dict(row)
+    finally:
+        conn.close()
+
+
+def revision_id(scope: str, object_id: str, content_hash: str) -> str:
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"{scope}:{object_id}:{content_hash}").hex
+
+
+def upsert_local_object(
+    profile: Path | None,
+    *,
+    scope: str,
+    object_id: str,
+    logical_path: str,
+    content_hash: str,
+    local_rev: str,
+    mtime: float,
+    size_bytes: int,
+    reason: str = "scan_changed",
+) -> bool:
+    """Record a scanned object and return True when it needs upload."""
+
+    manifest_path = ensure_manifest(profile)
+    conn = sqlite3.connect(str(manifest_path))
+    conn.row_factory = sqlite3.Row
+    now = utc_now()
+    try:
+        existing = conn.execute(
+            "SELECT * FROM objects WHERE scope = ? AND object_id = ?",
+            (scope, object_id),
+        ).fetchone()
+        existing_dict = _row_to_dict(existing)
+        remote_rev = existing_dict["remote_rev"] if existing_dict else None
+        dirty = 0 if remote_rev == local_rev else 1
+        changed = (
+            existing_dict is None
+            or existing_dict["logical_path"] != logical_path
+            or existing_dict["content_hash"] != content_hash
+            or existing_dict["local_rev"] != local_rev
+            or int(existing_dict["size_bytes"] or 0) != int(size_bytes)
+            or int(existing_dict["deleted"] or 0) != 0
+            or int(existing_dict["dirty"] or 0) != dirty
+        )
+        if changed:
+            conn.execute(
+                """
+                INSERT INTO objects(
+                    scope, object_id, logical_path, content_hash, local_rev,
+                    remote_rev, base_rev, mtime, size_bytes, deleted, dirty,
+                    conflict_state, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, '', ?)
+                ON CONFLICT(scope, object_id) DO UPDATE SET
+                    logical_path = excluded.logical_path,
+                    content_hash = excluded.content_hash,
+                    local_rev = excluded.local_rev,
+                    mtime = excluded.mtime,
+                    size_bytes = excluded.size_bytes,
+                    deleted = 0,
+                    dirty = excluded.dirty,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    scope,
+                    object_id,
+                    logical_path,
+                    content_hash,
+                    local_rev,
+                    remote_rev,
+                    remote_rev,
+                    mtime,
+                    size_bytes,
+                    dirty,
+                    now,
+                ),
+            )
+            if dirty:
+                conn.execute(
+                    """
+                    INSERT INTO dirty_queue(scope, object_id, reason, status, created_at)
+                    VALUES(?, ?, ?, 'pending', ?)
+                    """,
+                    (scope, object_id, reason, now),
+                )
+        conn.commit()
+        return bool(dirty)
+    finally:
+        conn.close()
+
+
+def list_dirty_objects(profile: Path | None = None) -> list[Dict[str, Any]]:
+    manifest_path = ensure_manifest(profile)
+    conn = sqlite3.connect(str(manifest_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM objects
+            WHERE dirty = 1 AND deleted = 0 AND conflict_state = ''
+            ORDER BY scope, logical_path
+            """
+        ).fetchall()
+        return [_row_to_dict(row) or {} for row in rows]
+    finally:
+        conn.close()
+
+
+def mark_object_clean(
+    profile: Path | None,
+    *,
+    scope: str,
+    object_id: str,
+    logical_path: str,
+    content_hash: str,
+    remote_rev: str,
+    mtime: float,
+    size_bytes: int,
+    source_device_id: str | None = None,
+    tombstone: bool = False,
+) -> None:
+    manifest_path = ensure_manifest(profile)
+    conn = sqlite3.connect(str(manifest_path))
+    now = utc_now()
+    try:
+        deleted = 1 if tombstone else 0
+        conn.execute(
+            """
+            INSERT INTO objects(
+                scope, object_id, logical_path, content_hash, local_rev,
+                remote_rev, base_rev, mtime, size_bytes, deleted, dirty,
+                conflict_state, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?)
+            ON CONFLICT(scope, object_id) DO UPDATE SET
+                logical_path = excluded.logical_path,
+                content_hash = excluded.content_hash,
+                local_rev = excluded.local_rev,
+                remote_rev = excluded.remote_rev,
+                base_rev = excluded.base_rev,
+                mtime = excluded.mtime,
+                size_bytes = excluded.size_bytes,
+                deleted = excluded.deleted,
+                dirty = 0,
+                conflict_state = '',
+                updated_at = excluded.updated_at
+            """,
+            (
+                scope,
+                object_id,
+                logical_path,
+                content_hash,
+                remote_rev,
+                remote_rev,
+                remote_rev,
+                mtime,
+                size_bytes,
+                deleted,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO revisions(
+                revision_id, scope, object_id, logical_path, content_hash,
+                local_rev, remote_rev, source_device_id, tombstone, created_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                remote_rev,
+                scope,
+                object_id,
+                logical_path,
+                content_hash,
+                remote_rev,
+                remote_rev,
+                source_device_id,
+                deleted,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE dirty_queue
+            SET status = 'done'
+            WHERE scope = ? AND object_id = ? AND status = 'pending'
+            """,
+            (scope, object_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_conflicts(profile: Path | None = None) -> list[Dict[str, Any]]:
+    manifest_path = ensure_manifest(profile)
+    conn = sqlite3.connect(str(manifest_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT * FROM conflicts WHERE state = 'pending' ORDER BY created_at, logical_path"
+        ).fetchall()
+        return [_row_to_dict(row) or {} for row in rows]
+    finally:
+        conn.close()
+
+
 def manifest_tables(profile: Path | None = None) -> Dict[str, list[str]]:
     manifest_path = ensure_manifest(profile)
     conn = sqlite3.connect(str(manifest_path))

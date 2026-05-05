@@ -221,12 +221,13 @@ def _scan_file(
             return
         stat = path.stat()
         logical_path = rel.as_posix()
+        content_hash = file_sha256(path)
         objects.append(
             ScanObject(
                 scope=scope,
                 object_id=_object_id(scope, logical_path),
                 logical_path=logical_path,
-                content_hash="",
+                content_hash=content_hash,
                 size_bytes=stat.st_size,
                 mtime=stat.st_mtime,
             )
@@ -242,6 +243,14 @@ def _iter_files(root: Path) -> Iterable[Path]:
                 yield path
     except OSError:
         return
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def scan_profile(profile: Path | None = None, scopes: Dict[str, bool] | None = None) -> ScanResult:
