@@ -39,7 +39,8 @@ class S3CompatibleBackend(OssBackend):
         credentials: S3Credentials | None = None,
         unsigned: bool = False,
         path_style: bool = False,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 60.0,
+        max_attempts: int = 4,
         service: str = "s3",
     ):
         self.bucket = self._safe_bucket(bucket)
@@ -49,6 +50,7 @@ class S3CompatibleBackend(OssBackend):
         self.unsigned = unsigned
         self.path_style = path_style
         self.timeout_seconds = timeout_seconds
+        self.max_attempts = max(1, int(max_attempts))
         self.service = service
         self.credentials = credentials if credentials is not None else self._env_credentials()
         if not self.unsigned and self.credentials is None:

@@ -12,6 +12,8 @@ import hashlib
 import hmac
 import json
 import os
+import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -48,7 +50,8 @@ class OssBackend:
         credentials: OssCredentials | None = None,
         unsigned: bool = False,
         path_style: bool = False,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 60.0,
+        max_attempts: int = 4,
         service: str = "s3",
     ):
         self.bucket = self._safe_bucket(bucket)
@@ -58,6 +61,7 @@ class OssBackend:
         self.unsigned = unsigned
         self.path_style = path_style
         self.timeout_seconds = timeout_seconds
+        self.max_attempts = max(1, int(max_attempts))
         self.service = service
         self.credentials = credentials if credentials is not None else self._env_credentials()
         if not self.unsigned and self.credentials is None:
@@ -220,14 +224,26 @@ class OssBackend:
         url = self._url_for_key(key, query)
         request_headers = dict(headers or {})
         request_headers.update(self._auth_headers(method, url, query, body, request_headers))
-        request = urllib.request.Request(url, data=body if method in {"PUT", "POST"} else None, headers=request_headers, method=method)
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return response.read()
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                raise FileNotFoundError(key) from exc
-            raise
+        data = body if method in {"PUT", "POST"} else None
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                    return response.read()
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    raise FileNotFoundError(key) from exc
+                if exc.code not in {429, 500, 502, 503, 504} or attempt == self.max_attempts:
+                    raise
+                last_error = exc
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+                if attempt == self.max_attempts:
+                    raise
+                last_error = exc
+            time.sleep(min(0.5 * (2 ** (attempt - 1)), 4.0))
+        assert last_error is not None
+        raise last_error
 
     def _url_for_key(self, key: str, query: Dict[str, str]) -> str:
         parsed = urllib.parse.urlsplit(self.endpoint)

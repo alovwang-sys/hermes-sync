@@ -436,6 +436,8 @@ def make_oss_backend(sync_config: Dict[str, str]) -> OssBackend:
         region=sync_config.get("region") or sync_config.get("oss_region") or "cn-hangzhou",
         unsigned=_config_bool(sync_config.get("unsigned"), default=False),
         path_style=_config_bool(sync_config.get("path_style"), default=False),
+        timeout_seconds=_config_float(sync_config.get("timeout_seconds"), default=60.0),
+        max_attempts=_config_int(sync_config.get("max_attempts"), default=4),
     )
 
 
@@ -458,6 +460,8 @@ def make_s3_backend(sync_config: Dict[str, str], *, default_region: str = "us-ea
         ),
         unsigned=_config_bool(sync_config.get("unsigned"), default=False),
         path_style=_config_bool(sync_config.get("path_style"), default=False),
+        timeout_seconds=_config_float(sync_config.get("timeout_seconds"), default=60.0),
+        max_attempts=_config_int(sync_config.get("max_attempts"), default=4),
     )
 
 
@@ -577,6 +581,8 @@ def _load_sync_config(profile: Path) -> Dict[str, str]:
                 "webdav_prefix",
                 "unsigned",
                 "path_style",
+                "timeout_seconds",
+                "max_attempts",
             }:
                 parsed = value.strip().strip("'\"")
                 result[key.strip()] = "" if parsed.lower() in {"null", "none"} else parsed
@@ -589,6 +595,26 @@ def _config_bool(value: str | None, *, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _config_float(value: str | None, *, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _config_int(value: str | None, *, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
 
 
 def _read_export_content(profile: Path, obj: ScanObject) -> bytes | None:
