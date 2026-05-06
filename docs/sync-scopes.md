@@ -14,10 +14,10 @@ sync:
 
   scopes:
     config: true
-    sessions: true
-    memory: true
+    sessions: false
+    memory: false
     artifacts: true
-    skills: true
+    skills: false
     plugins: false
     secrets: false
 
@@ -46,10 +46,13 @@ Export session snapshots in version 1 through read-only SQLite queries. Do not
 sync `state.db` or its WAL/SHM files. Other devices store pulled snapshots as
 plugin-owned read-only history under `sync/sessions/`.
 
+Disabled by default for real profiles. Enable it only after reviewing that
+session text is acceptable to copy to the selected remote.
+
 ### memory
 
-Sync only memory provider data that has an explicit export/import contract. Do
-not scrape private provider storage directly.
+Disabled by default. When enabled, sync allowlisted memory files under
+`memories/`; lock files and runtime state stay local.
 
 ### artifacts
 
@@ -58,13 +61,16 @@ agent-generated deliverables. Do not sync transient tool logs or caches.
 
 ### skills
 
-Sync skill manifests and enablement state. Do not sync dependency directories
-until dependency installation is modeled explicitly.
+Disabled by default. When enabled, sync allowlisted skill files under `skills/`.
+Skill hub state, curator state, logs, locks, caches, tmp files, and secret-like
+paths stay local.
 
 ### plugins
 
-Disabled by default. When enabled, sync plugin manifests and enablement state,
-not runtime caches or vendored dependency trees.
+Disabled by default. When enabled, sync plugin manifests only
+(`plugin.yaml`, `plugin.yml`, or `plugin.json`). Plugin Python code,
+`__pycache__`, runtime caches, dependency directories, and vendored trees stay
+local.
 
 ### secrets
 

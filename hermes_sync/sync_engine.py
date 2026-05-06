@@ -29,12 +29,20 @@ from .manifest import (
     upsert_local_object,
     utc_now,
 )
-from .remotes import LocalFolderBackend, OssBackend, RemoteBackend, RemoteObjectMetadata
+from .remotes import (
+    LocalFolderBackend,
+    OssBackend,
+    RemoteBackend,
+    RemoteObjectMetadata,
+    S3CompatibleBackend,
+    WebDavBackend,
+)
 from .scopes import (
     PathSafetyError,
     ScanObject,
+    load_configured_scopes,
     scan_profile,
-    validate_profile_relative_path,
+    validate_scope_relative_path,
 )
 from .session_snapshots import (
     export_session_snapshot_content,
@@ -45,10 +53,10 @@ from .session_snapshots import (
 SUPPORTED_SYNC_SCOPES: Dict[str, bool] = {
     "config": True,
     "sessions": True,
-    "memory": False,
+    "memory": True,
     "artifacts": True,
-    "skills": False,
-    "plugins": False,
+    "skills": True,
+    "plugins": True,
     "secrets": False,
 }
 
@@ -184,16 +192,17 @@ def run_pull(profile: Path | None = None, remote_path: Path | str | None = None)
     actions = _empty_actions()
     staging = {"outbox": 0, "inbox": 0, "skipped": 0}
     phases: list[Dict[str, Any]] = []
+    scope_flags = load_configured_scopes(profile_root, SUPPORTED_SYNC_SCOPES)
 
     remote_objects = [
         metadata
         for metadata in backend.list_objects()
-        if SUPPORTED_SYNC_SCOPES.get(metadata.scope, False)
+        if scope_flags.get(metadata.scope, False)
     ]
     remote_tombstones = [
         metadata
         for metadata in backend.list_tombstones()
-        if SUPPORTED_SYNC_SCOPES.get(metadata.scope, False)
+        if scope_flags.get(metadata.scope, False)
     ]
     phases.append(
         {
@@ -356,7 +365,11 @@ def restore_version(
         }
     try:
         content = content_path.read_bytes()
-        target = validate_profile_relative_path(profile_root, str(revision["logical_path"]))
+        target = validate_scope_relative_path(
+            profile_root,
+            revision_scope,
+            str(revision["logical_path"]),
+        )
     except (OSError, PathSafetyError):
         return {
             "status": "error",
@@ -426,11 +439,44 @@ def make_oss_backend(sync_config: Dict[str, str]) -> OssBackend:
     )
 
 
+def make_s3_backend(sync_config: Dict[str, str], *, default_region: str = "us-east-1") -> S3CompatibleBackend:
+    bucket = sync_config.get("bucket") or sync_config.get("s3_bucket") or sync_config.get("r2_bucket")
+    endpoint = sync_config.get("endpoint") or sync_config.get("s3_endpoint") or sync_config.get("r2_endpoint")
+    if not bucket:
+        raise SyncConfigurationError("sync.bucket is required for S3-compatible sync")
+    if not endpoint:
+        raise SyncConfigurationError("sync.endpoint is required for S3-compatible sync")
+    return S3CompatibleBackend(
+        bucket=bucket,
+        endpoint=endpoint,
+        prefix=sync_config.get("prefix") or sync_config.get("s3_prefix") or sync_config.get("r2_prefix") or "",
+        region=(
+            sync_config.get("region")
+            or sync_config.get("s3_region")
+            or sync_config.get("r2_region")
+            or default_region
+        ),
+        unsigned=_config_bool(sync_config.get("unsigned"), default=False),
+        path_style=_config_bool(sync_config.get("path_style"), default=False),
+    )
+
+
+def make_webdav_backend(sync_config: Dict[str, str]) -> WebDavBackend:
+    base_url = sync_config.get("url") or sync_config.get("endpoint") or sync_config.get("webdav_url")
+    if not base_url:
+        raise SyncConfigurationError("sync.url is required for WebDAV sync")
+    return WebDavBackend(
+        base_url=base_url,
+        prefix=sync_config.get("prefix") or sync_config.get("webdav_prefix") or "",
+    )
+
+
 def _scan_export_objects(profile: Path) -> tuple[list[ScanObject], Dict[str, bytes]]:
-    scan = scan_profile(profile, scopes=SUPPORTED_SYNC_SCOPES)
+    scope_flags = load_configured_scopes(profile, SUPPORTED_SYNC_SCOPES)
+    scan = scan_profile(profile, scopes=scope_flags)
     objects = list(scan.objects)
     session_contents: Dict[str, bytes] = {}
-    if SUPPORTED_SYNC_SCOPES.get("sessions", False):
+    if scope_flags.get("sessions", False):
         for export in export_session_snapshots(profile):
             objects.append(export.scan_object)
             session_contents[export.scan_object.object_id] = export.content
@@ -438,7 +484,7 @@ def _scan_export_objects(profile: Path) -> tuple[list[ScanObject], Dict[str, byt
 
 
 def _record_missing_deletes(profile: Path, device_id: str, scan_objects: list[ScanObject]) -> int:
-    tombstone_scopes = {"config", "artifacts"}
+    tombstone_scopes = {"config", "artifacts", "memory", "skills", "plugins"}
     current = {
         (obj.scope, obj.object_id)
         for obj in scan_objects
@@ -450,7 +496,11 @@ def _record_missing_deletes(profile: Path, device_id: str, scan_objects: list[Sc
         if key in current:
             continue
         try:
-            target = validate_profile_relative_path(profile, str(row["logical_path"]))
+            target = validate_scope_relative_path(
+                profile,
+                str(row["scope"]),
+                str(row["logical_path"]),
+            )
         except PathSafetyError:
             continue
         if target.exists():
@@ -483,6 +533,12 @@ def _backend_for(profile: Path, remote_path: Path | str | None) -> RemoteBackend
         return make_local_backend(Path(str(configured_path)))
     if remote_kind in {"oss", "alibaba-oss", "aliyun-oss"}:
         return make_oss_backend(sync_config)
+    if remote_kind in {"s3", "s3-compatible"}:
+        return make_s3_backend(sync_config)
+    if remote_kind in {"r2", "cloudflare-r2"}:
+        return make_s3_backend(sync_config, default_region="auto")
+    if remote_kind in {"webdav", "web-dav"}:
+        return make_webdav_backend(sync_config)
     raise SyncConfigurationError(f"unsupported sync remote: {remote_kind}")
 
 
@@ -502,12 +558,23 @@ def _load_sync_config(profile: Path) -> Dict[str, str]:
                 "remote_path",
                 "bucket",
                 "endpoint",
+                "url",
                 "prefix",
                 "region",
                 "oss_bucket",
                 "oss_endpoint",
                 "oss_prefix",
                 "oss_region",
+                "s3_bucket",
+                "s3_endpoint",
+                "s3_prefix",
+                "s3_region",
+                "r2_bucket",
+                "r2_endpoint",
+                "r2_prefix",
+                "r2_region",
+                "webdav_url",
+                "webdav_prefix",
                 "unsigned",
                 "path_style",
             }:
@@ -530,7 +597,7 @@ def _read_export_content(profile: Path, obj: ScanObject) -> bytes | None:
             return None
         return export_session_snapshot_content(profile, obj.object_id)
     try:
-        path = validate_profile_relative_path(profile, obj.logical_path)
+        path = validate_scope_relative_path(profile, obj.scope, obj.logical_path)
     except PathSafetyError:
         return None
     try:
@@ -752,7 +819,7 @@ def _import_object(profile: Path, metadata: RemoteObjectMetadata, content: bytes
     if hashlib.sha256(content).hexdigest() != metadata.content_hash:
         return ImportOutcome("skipped")
     try:
-        target = validate_profile_relative_path(profile, metadata.logical_path)
+        target = validate_scope_relative_path(profile, metadata.scope, metadata.logical_path)
     except PathSafetyError:
         return ImportOutcome("skipped")
     if target.exists():
@@ -816,7 +883,7 @@ def _import_object(profile: Path, metadata: RemoteObjectMetadata, content: bytes
 
 def _import_tombstone(profile: Path, metadata: RemoteObjectMetadata) -> ImportOutcome:
     try:
-        target = validate_profile_relative_path(profile, metadata.logical_path)
+        target = validate_scope_relative_path(profile, metadata.scope, metadata.logical_path)
     except PathSafetyError:
         return ImportOutcome("skipped")
     row = get_manifest_object(profile, metadata.scope, metadata.object_id)

@@ -83,9 +83,11 @@ class RemoteBackend:
 
 The local-folder backend remains the reference backend. The Alibaba Cloud OSS
 backend uses the same `RemoteBackend` protocol through the OSS S3-compatible
-API. Git, WebDAV, and generic S3/R2 come after the object model and conflict
-rules are stable. Event cursor methods can be added after session snapshots
-and tombstone propagation are reliable.
+API. The WebDAV backend uses the same `RemoteBackend` protocol through a small
+MKCOL/PROPFIND/PUT/GET/DELETE subset. The generic S3/R2 backend uses the same
+S3-compatible API shape without OSS-specific compatibility headers. Git comes
+after the object model and conflict rules are stable. Event cursor methods can
+be added after session snapshots and tombstone propagation are reliable.
 
 Every backend must pass the shared conformance harness before it is used in
 end-to-end sync scenarios. The conformance suite covers active object
@@ -104,9 +106,28 @@ Remote object storage layout is backend-independent:
 For OSS, `bucket`, `endpoint`, `region`, and `prefix` are non-secret routing
 configuration. Access keys and STS tokens are local environment variables only
 and must not be stored in synced profile content, fixtures, traces, or docs.
-The executable harness covers OSS through an in-memory fake OSS service; a live
-Alibaba Cloud bucket remains a gated manual acceptance target with an isolated
-test prefix.
+The executable harness covers OSS through an in-memory fake OSS service that
+validates the unsigned S3-compatible request subset used by `OssBackend`:
+path-style object `PUT`/`GET`/`DELETE`, ListObjectsV2 prefix listing,
+`x-oss-s3-compat`, and payload SHA-256 headers. This makes the OSS backend
+implementation complete against fake conformance. Live Alibaba Cloud
+acceptance is specified as a separate manual gate with a real bucket, local
+environment credentials, and an isolated `hermes-sync-live-acceptance/` prefix.
+
+For WebDAV, `url` or `endpoint` and `prefix` are non-secret routing
+configuration. Username and password are read only from
+`HERMES_SYNC_WEBDAV_USERNAME` and `HERMES_SYNC_WEBDAV_PASSWORD` when needed.
+The executable harness covers WebDAV through an in-memory fake WebDAV service
+that validates collection creation, recursive listing, object upload/download,
+and explicit delete behavior without touching a real WebDAV account.
+
+For generic S3/R2, `bucket`, `endpoint`, `region`, and `prefix` are non-secret
+routing configuration. Access keys and session tokens are read only from
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN`. The
+executable harness covers generic S3/R2 through an in-memory fake S3-compatible
+service that validates path-style object operations, ListObjectsV2 prefix
+listing, payload SHA-256 headers, and absence of OSS-only compatibility
+headers.
 
 ## Session Sync
 
@@ -185,6 +206,10 @@ under plugin-owned `sync/` metadata.
 ## Security Defaults
 
 - `secrets` scope is disabled.
+- `sessions`, `memory`, and `skills` are opt-in for real profiles; the local
+  smoke config starts with only `config` and `artifacts` enabled.
+- `plugins` syncs manifests only; plugin executable code and runtime caches are
+  intentionally local-only.
 - `.env` and database files are excluded even if a broad scope is enabled.
 - Remote backends must not log object content by default.
 - Future encrypted sync must be end-to-end; the remote must not hold plaintext

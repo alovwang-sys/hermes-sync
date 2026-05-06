@@ -59,7 +59,7 @@ by test setup scripts rather than checked in with real profile data.
 
 1. Create two temporary Hermes profiles.
 2. Create a temporary local-folder remote.
-3. Create temporary fake OSS HTTP remotes for OSS backend checks.
+3. Create temporary fake OSS, fake S3, and fake WebDAV HTTP remotes for backend checks.
 4. Seed fixtures into `device-a`.
 5. Enable the sync plugin in the temporary profile config.
 6. Run `/sync status` or `sync_status` and assert no excluded paths are listed.
@@ -132,13 +132,19 @@ For example:
 | Inbox staging before import | `pull` stages remote objects into inbox before applying user-visible imports. |
 | Config export | Non-secret config appears in outbox and remote storage. |
 | Secret exclusion | `.env`, credential files, and token-like keys are skipped. |
+| Configured scope disable sessions | `sync.scopes.sessions: false` prevents status, push, and pull from processing session snapshots while other enabled scopes still sync. |
 | DB exclusion | `state.db` and WAL/SHM files are skipped. |
 | Artifact push/pull | Text artifact arrives on second device. |
+| Memory/skills/plugins push/pull | Memory files, skill files, and plugin manifests arrive on the second device while locks, skill hub state, plugin executable files, and runtime data stay local. |
 | Runtime file exclusion | Logs, caches, tmp files, lock files, and watcher state remain local. |
 | Session snapshot | Session JSON is exported and stored as plugin-owned history, not database files. |
 | Backend conformance | The local-folder reference backend passes reusable object, tombstone, idempotency, and path-safety checks. |
-| OSS backend conformance | The OSS backend passes the same conformance suite against a temporary fake OSS service. |
+| OSS backend conformance | The OSS backend passes the same conformance suite against a temporary fake OSS service that validates the harness OSS protocol subset. |
 | OSS sync config round trip | A `remote: oss` profile pushes and pulls allowed objects through fake OSS without credentials or runtime state. |
+| WebDAV backend conformance | The WebDAV backend passes the same conformance suite against a temporary fake WebDAV service that validates the harness WebDAV protocol subset. |
+| WebDAV sync config round trip | A `remote: webdav` profile pushes and pulls allowed objects through fake WebDAV without credentials or runtime state. |
+| S3 backend conformance | The S3-compatible backend passes the same conformance suite against a temporary fake S3 service that validates the harness S3 protocol subset. |
+| R2 sync config round trip | A `remote: r2` profile pushes and pulls allowed objects through fake S3-compatible storage without credentials or runtime state. |
 | Idempotent push | Second `push` creates no extra remote changes. |
 | Idempotent pull | Second `pull` creates no extra local changes. |
 | Idempotent once | Second run makes no changes. |
@@ -214,8 +220,9 @@ other runtime-only state never enter manifests or remotes.
 
 Backend conformance is the Phase 5 gate for every `RemoteBackend`
 implementation. The runner currently executes the shared suite against the
-local-folder reference backend and the OSS backend through a temporary fake OSS
-HTTP service.
+local-folder reference backend, the OSS backend through a temporary fake OSS
+HTTP service, the generic S3/R2 backend through a temporary fake S3 HTTP
+service, and the WebDAV backend through a temporary fake WebDAV HTTP service.
 
 The conformance suite verifies:
 
@@ -227,10 +234,70 @@ The conformance suite verifies:
 - re-uploading an object clears the tombstone and restores the active head
 - unsafe scope or object identifiers are rejected without path escape writes
 
+## Fake OSS Protocol Contract
+
+The fake OSS service is a local conformance server, not an Alibaba Cloud
+emulator. It validates the standard-library S3-compatible subset that
+`OssBackend` uses in the default harness:
+
+- path-style harness requests only: `PUT`, `GET`, and `DELETE` object paths
+  under `/<bucket>/<key>`
+- ListObjectsV2 requests only at `/<bucket>?list-type=2&prefix=...`
+- `x-oss-s3-compat: true` on every request
+- `x-amz-content-sha256` matching the exact request payload
+- unsigned harness traffic only; `Authorization` and STS token headers are
+  rejected by the fake service
+- XML ListObjectsV2 responses with prefix filtering and S3-style 404 behavior
+  for missing objects
+
+The executable scenarios assert that OSS conformance covers list, put, get,
+and delete operations. Passing fake conformance means the OSS backend
+implementation is complete against this local contract. It does not claim that
+a live Alibaba Cloud account has been exercised.
+
 The OSS harness also runs an end-to-end `remote: oss` config round trip through
 the sync engine. It uses `unsigned` and `path_style` only for the local fake
 service; live Alibaba Cloud OSS must use local environment credentials and
 virtual-hosted style configuration.
+
+## Fake WebDAV Protocol Contract
+
+The fake WebDAV service is a local conformance server, not a full WebDAV
+implementation. It validates the standard-library subset that `WebDavBackend`
+uses in the default harness:
+
+- `MKCOL` creates missing parent collections before object writes
+- `PROPFIND` with `Depth: infinity` lists keys under the configured prefix
+- `PUT` writes object metadata and content only when parent collections exist
+- `GET` downloads active metadata and content, with 404 for missing objects
+- `DELETE` removes tombstone keys or active content explicitly
+- unauthenticated harness traffic only; live credentials, when needed, stay in
+  local environment variables and are not part of fake conformance
+
+Passing fake WebDAV conformance means the WebDAV backend implementation is
+complete against this local contract. It does not claim that a live WebDAV
+server has been exercised.
+
+## Fake S3/R2 Protocol Contract
+
+The fake S3 service is a local conformance server for generic S3-compatible
+storage, including the `remote: r2` alias. It validates the standard-library
+subset that `S3CompatibleBackend` uses in the default harness:
+
+- path-style harness requests only: `PUT`, `GET`, and `DELETE` object paths
+  under `/<bucket>/<key>`
+- ListObjectsV2 requests only at `/<bucket>?list-type=2&prefix=...`
+- `x-amz-content-sha256` matching the exact request payload
+- unsigned harness traffic only; `Authorization` and session token headers are
+  rejected by the fake service
+- OSS-specific `x-oss-s3-compat` headers are rejected so generic S3/R2 behavior
+  remains distinct from the Alibaba Cloud OSS backend
+- XML ListObjectsV2 responses with prefix filtering and S3-style 404 behavior
+  for missing objects
+
+Passing fake S3/R2 conformance means the S3-compatible backend implementation
+is complete against this local contract. It does not claim that a live AWS S3,
+R2, or other S3-compatible account has been exercised.
 
 Live OSS acceptance is a separate gated command and is not part of the default
 runner:
@@ -247,8 +314,8 @@ The command also requires `ALIBABA_CLOUD_ACCESS_KEY_ID` and
 temporary profiles, uses a prefix under `hermes-sync-live-acceptance/`, and
 deletes that prefix after the run.
 
-Git, WebDAV, and generic S3/R2 backends must pass this same suite before they
-are eligible for end-to-end sync scenarios.
+Git must pass this same suite before it is eligible for end-to-end sync
+scenarios.
 
 ## Manual Acceptance Checklist
 

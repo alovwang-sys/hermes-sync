@@ -10,10 +10,10 @@ from typing import Any, Dict, Iterable
 
 DEFAULT_SCOPES: Dict[str, bool] = {
     "config": True,
-    "sessions": True,
-    "memory": True,
+    "sessions": False,
+    "memory": False,
     "artifacts": True,
-    "skills": True,
+    "skills": False,
     "plugins": False,
     "secrets": False,
 }
@@ -25,6 +25,9 @@ SCOPE_ROOTS: Dict[str, tuple[str, ...]] = {
     "skills": ("skills",),
     "plugins": ("plugins",),
 }
+PLUGIN_MANIFEST_NAMES = {"plugin.yaml", "plugin.yml", "plugin.json"}
+SKILL_RUNTIME_NAMES = {".bundled_manifest", ".curator_state"}
+SKILL_RUNTIME_DIRS = {".hub"}
 
 BLOCKED_TOP_LEVEL = {
     ".git",
@@ -76,6 +79,8 @@ DEFAULT_EXCLUDE_PATTERNS = (
     "*.db-shm",
     ".env",
 )
+_BOOL_TRUE = {"1", "true", "yes", "on"}
+_BOOL_FALSE = {"0", "false", "no", "off"}
 
 
 class PathSafetyError(ValueError):
@@ -124,24 +129,91 @@ def _record_block(blocked_reasons: Dict[str, int], code: str) -> None:
     blocked_reasons[code] = blocked_reasons.get(code, 0) + 1
 
 
-def _load_scope_overrides(profile: Path) -> Dict[str, bool]:
+def load_configured_scopes(
+    profile: Path,
+    limit: Dict[str, bool] | None = None,
+) -> Dict[str, bool]:
     scopes = dict(DEFAULT_SCOPES)
+    scopes.update(_load_scope_overrides(profile))
+    if limit is None:
+        return scopes
+    return {
+        key: bool(enabled) and bool(scopes.get(key, False))
+        for key, enabled in limit.items()
+    }
+
+
+def _load_scope_overrides(profile: Path) -> Dict[str, bool]:
     config_path = profile / "config.yaml"
     if not config_path.exists():
-        return scopes
+        return {}
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+
+    loaded_scopes: Dict[str, bool] = {}
     try:
         import yaml  # type: ignore
 
-        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        loaded = yaml.safe_load(text) or {}
+        sync_cfg = loaded.get("sync") if isinstance(loaded, dict) else None
+        scope_cfg = sync_cfg.get("scopes") if isinstance(sync_cfg, dict) else None
+        if isinstance(scope_cfg, dict):
+            for key, value in scope_cfg.items():
+                parsed = _parse_bool(value)
+                if key in DEFAULT_SCOPES and parsed is not None:
+                    loaded_scopes[key] = parsed
     except Exception:
-        return scopes
-    sync_cfg = loaded.get("sync") if isinstance(loaded, dict) else None
-    scope_cfg = sync_cfg.get("scopes") if isinstance(sync_cfg, dict) else None
-    if isinstance(scope_cfg, dict):
-        for key, value in scope_cfg.items():
-            if key in scopes and isinstance(value, bool):
-                scopes[key] = value
+        loaded_scopes = {}
+    if loaded_scopes:
+        return loaded_scopes
+    return _load_scope_overrides_text(text)
+
+
+def _load_scope_overrides_text(text: str) -> Dict[str, bool]:
+    scopes: Dict[str, bool] = {}
+    in_sync = False
+    in_scopes = False
+    scopes_indent = 0
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip()
+        if indent == 0:
+            in_sync = stripped == "sync:"
+            in_scopes = False
+            continue
+        if not in_sync:
+            continue
+        if in_scopes and indent <= scopes_indent:
+            in_scopes = False
+        if stripped == "scopes:":
+            in_scopes = True
+            scopes_indent = indent
+            continue
+        if not in_scopes or indent <= scopes_indent or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        parsed = _parse_bool(value.strip().strip("'\""))
+        if key in DEFAULT_SCOPES and parsed is not None:
+            scopes[key] = parsed
     return scopes
+
+
+def _parse_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _BOOL_TRUE:
+            return True
+        if normalized in _BOOL_FALSE:
+            return False
+    return None
 
 
 def _matches_default_exclude(rel: Path) -> bool:
@@ -200,6 +272,36 @@ def validate_profile_relative_path(profile: Path, relative_path: str | Path) -> 
     return target
 
 
+def validate_scope_relative_path(profile: Path, scope: str, relative_path: str | Path) -> Path:
+    """Resolve a profile-relative path and reject scope escapes."""
+
+    rel = Path(relative_path)
+    target = validate_profile_relative_path(profile, rel)
+    reason = scope_path_block_reason(scope, rel)
+    if reason:
+        raise PathSafetyError(reason, "path is blocked by scope policy")
+    return target
+
+
+def scope_path_block_reason(scope: str, rel: Path) -> str | None:
+    parts = rel.parts
+    if scope == "config":
+        return None if rel.as_posix() in CONFIG_FILES else "scope_root_mismatch"
+    if scope in SCOPE_ROOTS:
+        roots = SCOPE_ROOTS[scope]
+        if not parts or parts[0] not in roots:
+            return "scope_root_mismatch"
+    if scope == "plugins":
+        if len(parts) != 3 or parts[-1] not in PLUGIN_MANIFEST_NAMES:
+            return "plugin_non_manifest"
+    if scope == "skills":
+        if len(parts) >= 2 and parts[1] in SKILL_RUNTIME_DIRS:
+            return "blocked_runtime_dir"
+        if rel.name in SKILL_RUNTIME_NAMES:
+            return "blocked_runtime_file"
+    return None
+
+
 def _object_id(scope: str, logical_path: str) -> str:
     return hashlib.sha256(f"{scope}:{logical_path}".encode("utf-8")).hexdigest()
 
@@ -215,6 +317,10 @@ def _scan_file(
         path = validate_profile_relative_path(profile, rel)
     except PathSafetyError as exc:
         _record_block(blocked_reasons, exc.code)
+        return
+    reason = scope_path_block_reason(scope, rel)
+    if reason:
+        _record_block(blocked_reasons, reason)
         return
     try:
         if not path.is_file():
@@ -259,10 +365,12 @@ def scan_profile(profile: Path | None = None, scopes: Dict[str, bool] | None = N
     from .manifest import get_hermes_home
 
     profile_root = Path(profile) if profile is not None else get_hermes_home()
-    scope_flags = dict(DEFAULT_SCOPES)
-    scope_flags.update(_load_scope_overrides(profile_root))
+    scope_flags = load_configured_scopes(profile_root)
     if scopes:
-        scope_flags.update(scopes)
+        scope_flags = {
+            key: bool(enabled) and bool(scope_flags.get(key, False))
+            for key, enabled in scopes.items()
+        }
 
     objects: list[ScanObject] = []
     blocked_reasons: Dict[str, int] = {}

@@ -1,12 +1,13 @@
 {
   "schema_version": 1,
   "project": "hermes-sync",
-  "last_updated": "2026-05-06",
+  "last_updated": "2026-05-07",
   "status_values": {
     "not_started": "No implementation or executable harness work exists yet.",
     "specified": "The behavior is documented but not executable yet.",
     "in_progress": "Code, tests, or harness work has started.",
     "complete": "Implementation exists and required harness coverage passes.",
+    "manual": "The behavior is specified with a gated manual runner or checklist and intentionally requires user-provided external resources outside the default harness.",
     "blocked": "Progress depends on a missing design decision or dependency.",
     "blocked_core_extension": "Progress needs a generic Hermes core extension, not sync logic in core."
   },
@@ -95,6 +96,8 @@
       "temporary Hermes profiles",
       "temporary local-folder remotes",
       "temporary fake OSS HTTP remotes",
+      "temporary fake S3 HTTP remotes",
+      "temporary fake WebDAV HTTP remotes",
       "sanitized fixtures",
       "sanitized traces"
     ],
@@ -124,7 +127,7 @@
     ]
   },
   "last_harness_run": {
-    "date": "2026-05-06",
+    "date": "2026-05-07",
     "command": "python3 -m harness.run",
     "status": "completed",
     "completed_scenarios": [
@@ -143,14 +146,20 @@
       "empty_profiles",
       "config_export",
       "secret_exclusion",
+      "configured_scope_disable_sessions",
       "db_file_exclusion",
       "artifact_push_pull",
+      "memory_skills_plugins_push_pull",
       "runtime_file_exclusion",
       "session_snapshot",
       "local_remote_object_round_trip",
       "backend_conformance",
       "oss_backend_conformance",
       "oss_sync_config_round_trip",
+      "webdav_backend_conformance",
+      "webdav_sync_config_round_trip",
+      "s3_backend_conformance",
+      "r2_sync_config_round_trip",
       "outbox_processing",
       "inbox_staging_before_import",
       "push_idempotent",
@@ -226,7 +235,7 @@
       "surface": ["config", "sessions", "memory", "artifacts", "skills", "plugins", "secrets"],
       "status": "complete",
       "core_compatibility": "usable",
-      "harness_scenarios": ["path_allowlist", "ignore_rules", "traversal_rejection", "symlink_escape_rejection"]
+      "harness_scenarios": ["path_allowlist", "ignore_rules", "configured_scope_disable_sessions", "traversal_rejection", "symlink_escape_rejection"]
     },
     {
       "id": "local.remote",
@@ -269,12 +278,20 @@
       "harness_scenarios": ["inbox_staging_before_import", "artifact_push_pull", "runtime_file_exclusion"]
     },
     {
+      "id": "memory.skills.plugins.sync",
+      "phase": 2,
+      "surface": ["memory scope", "skills scope", "plugin manifest scope"],
+      "status": "complete",
+      "core_compatibility": "usable",
+      "harness_scenarios": ["memory_skills_plugins_push_pull", "runtime_file_exclusion"]
+    },
+    {
       "id": "session.snapshots",
       "phase": 2,
-      "surface": ["sessions scope", "future on_session_end", "state.db read-only export", "sync/sessions read-only history"],
+      "surface": ["opt-in sessions scope", "future on_session_end", "state.db read-only export", "sync/sessions read-only history"],
       "status": "complete",
       "core_compatibility": "usable_for_snapshots",
-      "harness_scenarios": ["session_snapshot", "db_file_exclusion"]
+      "harness_scenarios": ["session_snapshot", "configured_scope_disable_sessions", "db_file_exclusion"]
     },
     {
       "id": "continuous.sync",
@@ -330,25 +347,63 @@
     {
       "id": "remote.backends",
       "phase": 5,
-      "surface": ["RemoteBackend conformance", "local-folder", "Alibaba Cloud OSS", "Git", "WebDAV", "S3/R2"],
+      "surface": ["RemoteBackend conformance", "local-folder", "Alibaba Cloud OSS fake conformance", "WebDAV fake conformance", "S3/R2 fake conformance", "Git"],
       "status": "in_progress",
-      "core_compatibility": "local_and_oss_fake_conformance_complete_live_oss_acceptance_runner_ready",
+      "core_compatibility": "local_oss_webdav_and_s3_r2_fake_conformance_complete_git_pending",
       "harness_scenarios": [
         "backend_conformance",
         "oss_backend_conformance",
         "oss_sync_config_round_trip",
-        "oss_live_acceptance"
+        "webdav_backend_conformance",
+        "webdav_sync_config_round_trip",
+        "s3_backend_conformance",
+        "r2_sync_config_round_trip"
       ]
     },
     {
-      "id": "aliyun.oss.remote",
+      "id": "aliyun.oss.backend_fake_conformance",
       "phase": 5,
-      "surface": ["remote: oss", "Alibaba Cloud OSS S3-compatible API", "OSS env credentials"],
-      "status": "in_progress",
-      "core_compatibility": "usable_via_remote_backend_protocol_default_harness_uses_fake_oss",
+      "surface": ["remote: oss", "OssBackend", "S3-compatible OSS subset", "fake OSS conformance"],
+      "status": "complete",
+      "contract": "OSS backend implementation complete against fake conformance",
+      "core_compatibility": "usable_via_remote_backend_protocol_default_harness_uses_fake_oss_without_credentials",
       "harness_scenarios": [
         "oss_backend_conformance",
-        "oss_sync_config_round_trip",
+        "oss_sync_config_round_trip"
+      ]
+    },
+    {
+      "id": "webdav.backend_fake_conformance",
+      "phase": 5,
+      "surface": ["remote: webdav", "WebDavBackend", "WebDAV MKCOL/PROPFIND/PUT/GET/DELETE subset", "fake WebDAV conformance"],
+      "status": "complete",
+      "contract": "WebDAV backend implementation complete against fake conformance",
+      "core_compatibility": "usable_via_remote_backend_protocol_default_harness_uses_fake_webdav_without_credentials",
+      "harness_scenarios": [
+        "webdav_backend_conformance",
+        "webdav_sync_config_round_trip"
+      ]
+    },
+    {
+      "id": "s3.r2.backend_fake_conformance",
+      "phase": 5,
+      "surface": ["remote: s3", "remote: r2", "S3CompatibleBackend", "S3-compatible API subset", "fake S3 conformance"],
+      "status": "complete",
+      "contract": "S3/R2 backend implementation complete against fake conformance",
+      "core_compatibility": "usable_via_remote_backend_protocol_default_harness_uses_fake_s3_without_credentials",
+      "harness_scenarios": [
+        "s3_backend_conformance",
+        "r2_sync_config_round_trip"
+      ]
+    },
+    {
+      "id": "aliyun.oss.live_acceptance",
+      "phase": 5,
+      "surface": ["harness.oss_live_acceptance", "real Alibaba Cloud OSS bucket", "isolated live acceptance prefix", "local environment credentials"],
+      "status": "manual",
+      "contract": "live Alibaba Cloud acceptance specified/manual",
+      "core_compatibility": "manual_external_acceptance_only_default_harness_never_uses_real_cloud_storage",
+      "harness_scenarios": [
         "oss_live_acceptance"
       ]
     },
@@ -458,6 +513,11 @@
       "expected": ".env and token-like keys are skipped everywhere."
     },
     {
+      "id": "configured_scope_disable_sessions",
+      "status": "complete",
+      "expected": "sync.scopes.sessions: false prevents status and push from processing session snapshots while enabled scopes still sync."
+    },
+    {
       "id": "db_file_exclusion",
       "status": "complete",
       "expected": "state.db, WAL, and SHM files are never synced as files."
@@ -466,6 +526,11 @@
       "id": "artifact_push_pull",
       "status": "complete",
       "expected": "Text artifact arrives on the second isolated profile."
+    },
+    {
+      "id": "memory_skills_plugins_push_pull",
+      "status": "complete",
+      "expected": "Memory files, skill files, and plugin manifests round-trip while locks, skill hub state, plugin executable files, and runtime data stay local."
     },
     {
       "id": "runtime_file_exclusion",
@@ -565,7 +630,7 @@
     {
       "id": "oss_backend_conformance",
       "status": "complete",
-      "expected": "The OSS backend passes the reusable RemoteBackend conformance suite against a temporary in-memory fake OSS HTTP service without real credentials."
+      "expected": "The OSS backend passes the reusable RemoteBackend conformance suite against a temporary in-memory fake OSS HTTP service that validates the unsigned S3-compatible OSS subset without real credentials."
     },
     {
       "id": "oss_sync_config_round_trip",
@@ -573,8 +638,28 @@
       "expected": "A profile configured with remote: oss pushes and pulls allowed config/artifact objects through a temporary fake OSS service without uploading secrets or runtime-only state."
     },
     {
+      "id": "webdav_backend_conformance",
+      "status": "complete",
+      "expected": "The WebDAV backend passes the reusable RemoteBackend conformance suite against a temporary in-memory fake WebDAV HTTP service that validates MKCOL, PROPFIND, PUT, GET, and DELETE behavior without real credentials."
+    },
+    {
+      "id": "webdav_sync_config_round_trip",
+      "status": "complete",
+      "expected": "A profile configured with remote: webdav pushes and pulls allowed config/artifact objects through a temporary fake WebDAV service without uploading secrets or runtime-only state."
+    },
+    {
+      "id": "s3_backend_conformance",
+      "status": "complete",
+      "expected": "The generic S3-compatible backend passes the reusable RemoteBackend conformance suite against a temporary in-memory fake S3 HTTP service that validates the unsigned S3-compatible subset without real credentials."
+    },
+    {
+      "id": "r2_sync_config_round_trip",
+      "status": "complete",
+      "expected": "A profile configured with remote: r2 pushes and pulls allowed config/artifact objects through a temporary fake S3-compatible service without uploading secrets or runtime-only state."
+    },
+    {
       "id": "oss_live_acceptance",
-      "status": "in_progress",
+      "status": "manual",
       "expected": "A gated manual runner against a real Alibaba Cloud OSS bucket uses only local environment credentials and an isolated test prefix, then verifies cleanup and no secret/runtime uploads."
     },
     {
@@ -584,6 +669,7 @@
     }
   ],
   "immediate_next_actions": [
+    "Add Git fake conformance before any live backend acceptance.",
     "Run the gated live OSS acceptance command against a real Alibaba Cloud bucket and isolated prefix when credentials are intentionally provided.",
     "Treat top-level hermes sync as blocked until Hermes core exposes generic plugin CLI registration before argparse parsing."
   ]

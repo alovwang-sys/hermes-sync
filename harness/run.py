@@ -11,6 +11,8 @@ from typing import Callable
 
 from .backend_conformance import run_backend_conformance
 from .fake_oss import FakeOssServer
+from .fake_s3 import FakeS3Server
+from .fake_webdav import FakeWebDavServer
 from .sync_harness import ScenarioFailure, ScenarioResult, SyncHarness, require
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -85,6 +87,49 @@ def run() -> dict:
                 f"  prefix: {prefix}\n"
                 "  unsigned: true\n"
                 "  path_style: true\n"
+                "  scopes:\n"
+                "    config: true\n"
+                "    sessions: true\n"
+                "    memory: true\n"
+                "    artifacts: true\n"
+                "    skills: true\n"
+                "    plugins: false\n"
+                "    secrets: false\n",
+                encoding="utf-8",
+            )
+
+        def write_fake_r2_config(profile: Path, server: FakeS3Server, prefix: str) -> None:
+            (profile / "config.yaml").write_text(
+                "plugins:\n"
+                "  enabled:\n"
+                "    - hermes-sync\n"
+                "sync:\n"
+                "  remote: r2\n"
+                f"  bucket: {server.bucket}\n"
+                f"  endpoint: {server.endpoint}\n"
+                f"  prefix: {prefix}\n"
+                "  unsigned: true\n"
+                "  path_style: true\n"
+                "  scopes:\n"
+                "    config: true\n"
+                "    sessions: true\n"
+                "    memory: true\n"
+                "    artifacts: true\n"
+                "    skills: true\n"
+                "    plugins: false\n"
+                "    secrets: false\n",
+                encoding="utf-8",
+            )
+
+        def write_fake_webdav_config(profile: Path, server: FakeWebDavServer, prefix: str) -> None:
+            (profile / "config.yaml").write_text(
+                "plugins:\n"
+                "  enabled:\n"
+                "    - hermes-sync\n"
+                "sync:\n"
+                "  remote: webdav\n"
+                f"  url: {server.endpoint}\n"
+                f"  prefix: {prefix}\n"
                 "  scopes:\n"
                 "    config: true\n"
                 "    sessions: true\n"
@@ -265,6 +310,41 @@ def run() -> dict:
                 require(marker not in payload, f"manifest included secret marker {marker}")
             return "secret-like config keys and credential files are skipped everywhere"
 
+        def configured_scope_disable_sessions() -> str:
+            scoped_remote = harness.make_remote("configured-scope-disable-sessions")
+            profile = harness.make_profile("sessions-disabled-source", scoped_remote)
+            harness.seed_session_fixture(profile)
+            artifact = profile / "artifacts" / "scope-check.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("Artifact scope remains enabled.\n", encoding="utf-8")
+            (profile / "config.yaml").write_text(
+                "plugins:\n"
+                "  enabled:\n"
+                "    - hermes-sync\n"
+                "sync:\n"
+                "  remote: local\n"
+                f"  remote_path: {scoped_remote}\n"
+                "  scopes:\n"
+                "    config: true\n"
+                "    sessions: false\n"
+                "    memory: false\n"
+                "    artifacts: true\n"
+                "    skills: false\n"
+                "    plugins: false\n"
+                "    secrets: false\n",
+                encoding="utf-8",
+            )
+            status = harness.direct_status(profile)
+            require("sessions" not in status["scan"]["scope_counts"], "status ignored sessions=false")
+            push = harness.run_push(profile, scoped_remote)
+            require(push["status"] == "ok", "configured scope push did not complete")
+            remote_objects = harness.list_remote_objects(scoped_remote)
+            scopes = {obj["scope"] for obj in remote_objects}
+            paths = {obj["logical_path"] for obj in remote_objects}
+            require("sessions" not in scopes, "sessions=false still uploaded session snapshots")
+            require("artifacts/scope-check.txt" in paths, "enabled artifact scope was not uploaded")
+            return "configured disabled session scope is honored by status and push"
+
         def db_file_exclusion() -> str:
             db_remote = harness.make_remote("db-file-exclusion")
             profile = harness.make_profile("db-source", db_remote)
@@ -293,6 +373,74 @@ def run() -> dict:
             imported = target / "artifacts" / "tool-output.txt"
             require(imported.read_text(encoding="utf-8") == "Sanitized tool artifact.\n", "artifact content did not round-trip")
             return "text artifact pushes from one profile and pulls into another"
+
+        def memory_skills_plugins_push_pull() -> str:
+            scoped_remote = harness.make_remote("memory-skills-plugins")
+            source = harness.make_profile("msp-source", scoped_remote)
+            target = harness.make_profile("msp-target", scoped_remote)
+            for profile in (source, target):
+                (profile / "config.yaml").write_text(
+                    "plugins:\n"
+                    "  enabled:\n"
+                    "    - hermes-sync\n"
+                    "sync:\n"
+                    "  remote: local\n"
+                    f"  remote_path: {scoped_remote}\n"
+                    "  scopes:\n"
+                    "    config: true\n"
+                    "    sessions: false\n"
+                    "    memory: true\n"
+                    "    artifacts: true\n"
+                    "    skills: true\n"
+                    "    plugins: true\n"
+                    "    secrets: false\n",
+                    encoding="utf-8",
+                )
+
+            memory = source / "memories" / "MEMORY.md"
+            memory.parent.mkdir(exist_ok=True)
+            memory.write_text("Remember this sanitized note.\n", encoding="utf-8")
+            (source / "memories" / "MEMORY.md.lock").write_text("runtime lock\n", encoding="utf-8")
+
+            skill = source / "skills" / "custom" / "SKILL.md"
+            skill.parent.mkdir(parents=True, exist_ok=True)
+            skill.write_text("# Custom skill\n\nSanitized skill body.\n", encoding="utf-8")
+            hub_state = source / "skills" / ".hub"
+            hub_state.mkdir(parents=True, exist_ok=True)
+            (hub_state / "taps.json").write_text("{}\n", encoding="utf-8")
+            (source / "skills" / ".curator_state").write_text("{}\n", encoding="utf-8")
+
+            plugin = source / "plugins" / "demo"
+            plugin.mkdir(parents=True, exist_ok=True)
+            (plugin / "plugin.yaml").write_text(
+                "name: demo\nversion: 0.0.1\ndescription: sanitized demo\n",
+                encoding="utf-8",
+            )
+            (plugin / "__init__.py").write_text("SECRET_TOKEN = 'blocked'\n", encoding="utf-8")
+
+            push = harness.run_push(source, scoped_remote)
+            require(push["status"] == "ok", "memory/skills/plugins push did not complete")
+            remote_objects = harness.list_remote_objects(scoped_remote)
+            remote_paths = {obj["logical_path"] for obj in remote_objects}
+            require("memories/MEMORY.md" in remote_paths, "memory file was not uploaded")
+            require("skills/custom/SKILL.md" in remote_paths, "skill file was not uploaded")
+            require("plugins/demo/plugin.yaml" in remote_paths, "plugin manifest was not uploaded")
+            for marker in (
+                "MEMORY.md.lock",
+                "skills/.hub/taps.json",
+                "skills/.curator_state",
+                "plugins/demo/__init__.py",
+                "SECRET_TOKEN",
+            ):
+                require(marker not in remote_payload(scoped_remote), f"unsafe scoped file leaked: {marker}")
+
+            pull = harness.run_pull(target, scoped_remote)
+            require(pull["status"] == "ok", "memory/skills/plugins pull did not complete")
+            require((target / "memories" / "MEMORY.md").read_text(encoding="utf-8") == "Remember this sanitized note.\n", "memory content did not round-trip")
+            require((target / "skills" / "custom" / "SKILL.md").read_text(encoding="utf-8") == "# Custom skill\n\nSanitized skill body.\n", "skill content did not round-trip")
+            require((target / "plugins" / "demo" / "plugin.yaml").exists(), "plugin manifest did not import")
+            require(not (target / "plugins" / "demo" / "__init__.py").exists(), "plugin executable file imported")
+            return "memory, skills, and plugin manifests push and pull while runtime/plugin code stays local"
 
         def runtime_file_exclusion() -> str:
             runtime_remote = harness.make_remote("runtime-file-exclusion")
@@ -403,7 +551,7 @@ def run() -> dict:
             from hermes_sync.remotes import OssBackend
 
             with FakeOssServer() as server:
-                return run_backend_conformance(
+                detail = run_backend_conformance(
                     backend_name="oss-fake",
                     backend_factory=lambda: OssBackend(
                         bucket=server.bucket,
@@ -414,6 +562,8 @@ def run() -> dict:
                     ),
                     remote_root=None,
                 )
+                server.assert_protocol_covered()
+                return detail + " with fake OSS protocol coverage"
 
         def oss_sync_config_round_trip() -> str:
             from hermes_sync.remotes import OssBackend
@@ -452,7 +602,115 @@ def run() -> dict:
                 payload = json.dumps([metadata.as_dict() for metadata in backend.list_objects()], sort_keys=True)
                 for marker in BLOCKED_MARKERS:
                     require(marker not in payload, f"OSS remote metadata included excluded marker {marker}")
+                server.assert_protocol_covered()
             return "remote: oss config pushes and pulls through a fake OSS service without secrets"
+
+        def webdav_backend_conformance() -> str:
+            from hermes_sync.remotes import WebDavBackend
+
+            with FakeWebDavServer() as server:
+                detail = run_backend_conformance(
+                    backend_name="webdav-fake",
+                    backend_factory=lambda: WebDavBackend(
+                        base_url=server.endpoint,
+                        prefix="hermes-sync/conformance",
+                    ),
+                    remote_root=None,
+                )
+                server.assert_protocol_covered()
+                return detail + " with fake WebDAV protocol coverage"
+
+        def webdav_sync_config_round_trip() -> str:
+            from hermes_sync.remotes import WebDavBackend
+
+            with FakeWebDavServer() as server:
+                prefix = "hermes-sync/e2e"
+                source = harness.make_profile("webdav-source")
+                target = harness.make_profile("webdav-target")
+                write_fake_webdav_config(source, server, prefix)
+                write_fake_webdav_config(target, server, prefix)
+                artifact = source / "artifacts" / "webdav.txt"
+                artifact.parent.mkdir(exist_ok=True)
+                artifact.write_text("WebDAV fake round trip fixture.\n", encoding="utf-8")
+
+                push = harness.run_push(source)
+                require(push["status"] == "ok", "WebDAV-configured push did not complete")
+                backend = WebDavBackend(base_url=server.endpoint, prefix=prefix)
+                remote_paths = {metadata.logical_path for metadata in backend.list_objects()}
+                require("artifacts/webdav.txt" in remote_paths, "WebDAV remote did not receive artifact")
+                require("config.yaml" in remote_paths, "WebDAV remote did not receive safe config")
+
+                pull = harness.run_pull(target)
+                require(pull["status"] == "ok", "WebDAV-configured pull did not complete")
+                imported = target / "artifacts" / "webdav.txt"
+                require(imported.exists(), "WebDAV pull did not import artifact")
+                require(
+                    imported.read_text(encoding="utf-8") == "WebDAV fake round trip fixture.\n",
+                    "WebDAV imported content did not match",
+                )
+                payload = json.dumps([metadata.as_dict() for metadata in backend.list_objects()], sort_keys=True)
+                for marker in BLOCKED_MARKERS:
+                    require(marker not in payload, f"WebDAV remote metadata included excluded marker {marker}")
+                server.assert_protocol_covered()
+            return "remote: webdav config pushes and pulls through a fake WebDAV service without secrets"
+
+        def s3_backend_conformance() -> str:
+            from hermes_sync.remotes import S3CompatibleBackend
+
+            with FakeS3Server() as server:
+                detail = run_backend_conformance(
+                    backend_name="s3-fake",
+                    backend_factory=lambda: S3CompatibleBackend(
+                        bucket=server.bucket,
+                        endpoint=server.endpoint,
+                        prefix="hermes-sync/conformance",
+                        unsigned=True,
+                        path_style=True,
+                    ),
+                    remote_root=None,
+                )
+                server.assert_protocol_covered()
+                return detail + " with fake S3 protocol coverage"
+
+        def r2_sync_config_round_trip() -> str:
+            from hermes_sync.remotes import S3CompatibleBackend
+
+            with FakeS3Server() as server:
+                prefix = "hermes-sync/r2-e2e"
+                source = harness.make_profile("r2-source")
+                target = harness.make_profile("r2-target")
+                write_fake_r2_config(source, server, prefix)
+                write_fake_r2_config(target, server, prefix)
+                artifact = source / "artifacts" / "r2.txt"
+                artifact.parent.mkdir(exist_ok=True)
+                artifact.write_text("R2 fake round trip fixture.\n", encoding="utf-8")
+
+                push = harness.run_push(source)
+                require(push["status"] == "ok", "R2-configured push did not complete")
+                backend = S3CompatibleBackend(
+                    bucket=server.bucket,
+                    endpoint=server.endpoint,
+                    prefix=prefix,
+                    unsigned=True,
+                    path_style=True,
+                )
+                remote_paths = {metadata.logical_path for metadata in backend.list_objects()}
+                require("artifacts/r2.txt" in remote_paths, "R2 remote did not receive artifact")
+                require("config.yaml" in remote_paths, "R2 remote did not receive safe config")
+
+                pull = harness.run_pull(target)
+                require(pull["status"] == "ok", "R2-configured pull did not complete")
+                imported = target / "artifacts" / "r2.txt"
+                require(imported.exists(), "R2 pull did not import artifact")
+                require(
+                    imported.read_text(encoding="utf-8") == "R2 fake round trip fixture.\n",
+                    "R2 imported content did not match",
+                )
+                payload = json.dumps([metadata.as_dict() for metadata in backend.list_objects()], sort_keys=True)
+                for marker in BLOCKED_MARKERS:
+                    require(marker not in payload, f"R2 remote metadata included excluded marker {marker}")
+                server.assert_protocol_covered()
+            return "remote: r2 config pushes and pulls through a fake S3-compatible service without secrets"
 
         def outbox_processing() -> str:
             result = harness.run_push(device_a, remote)
@@ -463,8 +721,8 @@ def run() -> dict:
             remote_paths = {obj["logical_path"] for obj in remote_objects}
             require("config.yaml" in remote_paths, "allowed config was not uploaded")
             require("artifacts/report.txt" in remote_paths, "allowed artifact was not uploaded")
-            require("skills/example/SKILL.md" not in remote_paths, "unsupported skill scope was uploaded")
-            require("memories/notes.json" not in remote_paths, "unsupported memory scope was uploaded")
+            require("skills/example/SKILL.md" in remote_paths, "enabled skill scope was not uploaded")
+            require("memories/notes.json" in remote_paths, "enabled memory scope was not uploaded")
             payload = json.dumps(remote_objects, sort_keys=True)
             for marker in BLOCKED_MARKERS:
                 require(marker not in payload, f"remote metadata included excluded marker {marker}")
@@ -1056,14 +1314,20 @@ def run() -> dict:
             ("empty_profiles", empty_profiles),
             ("config_export", config_export),
             ("secret_exclusion", secret_exclusion),
+            ("configured_scope_disable_sessions", configured_scope_disable_sessions),
             ("db_file_exclusion", db_file_exclusion),
             ("artifact_push_pull", artifact_push_pull),
+            ("memory_skills_plugins_push_pull", memory_skills_plugins_push_pull),
             ("runtime_file_exclusion", runtime_file_exclusion),
             ("session_snapshot", session_snapshot),
             ("local_remote_object_round_trip", local_remote_object_round_trip),
             ("backend_conformance", backend_conformance),
             ("oss_backend_conformance", oss_backend_conformance),
             ("oss_sync_config_round_trip", oss_sync_config_round_trip),
+            ("webdav_backend_conformance", webdav_backend_conformance),
+            ("webdav_sync_config_round_trip", webdav_sync_config_round_trip),
+            ("s3_backend_conformance", s3_backend_conformance),
+            ("r2_sync_config_round_trip", r2_sync_config_round_trip),
             ("outbox_processing", outbox_processing),
             ("inbox_staging_before_import", inbox_staging_before_import),
             ("push_idempotent", push_idempotent),

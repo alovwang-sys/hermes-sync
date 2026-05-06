@@ -1,4 +1,4 @@
-"""Small in-memory OSS-compatible server for backend conformance tests."""
+"""Small in-memory S3-compatible server for backend conformance tests."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, Iterator
 
 
-class FakeOssServer:
+class FakeS3Server:
     def __init__(self, *, bucket: str = "hermes-sync-harness"):
         self.bucket = bucket
         self._objects: Dict[str, bytes] = {}
@@ -27,7 +27,7 @@ class FakeOssServer:
         host, port = self._server.server_address
         return f"http://{host}:{port}"
 
-    def __enter__(self) -> "FakeOssServer":
+    def __enter__(self) -> "FakeS3Server":
         self._thread.start()
         return self
 
@@ -37,7 +37,7 @@ class FakeOssServer:
         self._thread.join(timeout=1.0)
 
     @contextlib.contextmanager
-    def running(self) -> Iterator["FakeOssServer"]:
+    def running(self) -> Iterator["FakeS3Server"]:
         with self:
             yield self
 
@@ -46,12 +46,12 @@ class FakeOssServer:
         required = {"LIST", "PUT_OBJECT", "GET_OBJECT", "DELETE_OBJECT"}
         missing = sorted(required - operations)
         if missing:
-            raise AssertionError(f"fake OSS protocol coverage missing: {missing}")
+            raise AssertionError(f"fake S3 protocol coverage missing: {missing}")
 
     @staticmethod
     def _handler_class():
         class Handler(BaseHTTPRequestHandler):
-            server_version = "FakeOssHarness/1.0"
+            server_version = "FakeS3Harness/1.0"
 
             def do_PUT(self) -> None:
                 length = int(self.headers.get("Content-Length") or "0")
@@ -127,7 +127,7 @@ class FakeOssServer:
                 if self.headers.get("Authorization") or self.headers.get("x-amz-security-token"):
                     self._send_status(400)
                     return False
-                if self.headers.get("x-oss-s3-compat") != "true":
+                if self.headers.get("x-oss-s3-compat"):
                     self._send_status(400)
                     return False
                 expected_hash = hashlib.sha256(body).hexdigest()

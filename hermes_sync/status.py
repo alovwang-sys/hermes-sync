@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .manifest import ensure_device, ensure_manifest, get_hermes_home, inspect_manifest
-from .scopes import scan_profile
+from .scopes import load_configured_scopes, scan_profile
 from .session_snapshots import export_session_snapshots
 
 
@@ -19,7 +19,8 @@ def get_status(profile: Path | None = None) -> Dict[str, Any]:
     manifest = inspect_manifest(profile_root)
     scan = scan_profile(profile_root)
     scan_data = scan.as_dict()
-    session_exports = export_session_snapshots(profile_root)
+    scope_flags = load_configured_scopes(profile_root)
+    session_exports = export_session_snapshots(profile_root) if scope_flags.get("sessions", False) else []
     if session_exports:
         scan_data["objects"].extend(export.scan_object.as_dict() for export in session_exports)
         scan_data["objects"].sort(key=lambda obj: (obj["scope"], obj["logical_path"]))

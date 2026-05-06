@@ -32,10 +32,10 @@ config:
   device_name: null
   scopes:
     config: true
-    sessions: true
-    memory: true
+    sessions: false
+    memory: false
     artifacts: true
-    skills: true
+    skills: false
     plugins: false
     secrets: false
   exclude:

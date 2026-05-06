@@ -29,10 +29,13 @@ hermes-sync/
   README.md
   feature_list.json
   plugin.yaml
+  scripts/
+    install_dev_plugin.py
   docs/
     architecture.md
     sync-scopes.md
     harness.md
+    deployment.md
     hermes-agent-integration.md
     feature-list.md
     progress.md
@@ -121,10 +124,18 @@ The implemented surfaces are:
   allowlisted config/artifact mtimes, and prevent overlapping sync cycles with
   a local plugin-owned lock
 - run reusable backend conformance checks against the local-folder reference
-  backend and an OSS backend backed by a fake OSS harness service
+  backend and an OSS backend backed by a fake OSS harness service that
+  validates the local S3-compatible request subset
 - support `remote: oss` through the `RemoteBackend` protocol for Alibaba Cloud
-  OSS-compatible object storage; live credentials are read only from local
-  environment variables
+  OSS-compatible object storage; this implementation is complete against fake
+  conformance, while live Alibaba Cloud acceptance is a specified/manual gate.
+  Live credentials are read only from local environment variables
+- support `remote: webdav` through the `RemoteBackend` protocol; this
+  implementation is complete against fake conformance for MKCOL, PROPFIND,
+  PUT, GET, and DELETE behavior
+- support `remote: s3` and `remote: r2` through the `RemoteBackend` protocol;
+  this implementation is complete against fake conformance for the standard
+  S3-compatible request subset
 - keep top-level `hermes sync ...` as future work until Hermes core exposes a
   generic plugin CLI-command bridge
 
@@ -166,6 +177,91 @@ export HERMES_SYNC_OSS_REGION=cn-hangzhou
 python3 -m harness.oss_live_acceptance
 ```
 
+## Test Deployment
+
+For a quick development install into a Hermes profile:
+
+```bash
+python3 scripts/install_dev_plugin.py --profile ~/.hermes
+```
+
+Then enable `hermes-sync` and start with a local-folder remote in
+`~/.hermes/config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - hermes-sync
+
+sync:
+  remote: local
+  remote_path: /tmp/hermes-sync-dev-remote
+  scopes:
+    config: true
+    sessions: false
+    artifacts: true
+    memory: true
+    skills: true
+    plugins: true
+    secrets: false
+```
+
+Use `/sync status` and `/sync now` inside Hermes. See
+`docs/deployment.md` for the full test deployment checklist and OSS notes.
+Keep `sessions: false` for the first real-profile smoke run; session snapshots
+are available but intentionally opt-in because they can contain user message
+text. With `plugins: true`, only plugin manifests sync; plugin executable code
+and runtime caches stay local.
+
+## WebDAV Remote Configuration
+
+For WebDAV, keep username and password out of `config.yaml` and set them in the
+local environment only when the server requires authentication:
+
+```bash
+export HERMES_SYNC_WEBDAV_USERNAME=...
+export HERMES_SYNC_WEBDAV_PASSWORD=...
+```
+
+Profile config contains only non-secret routing data:
+
+```yaml
+sync:
+  remote: webdav
+  url: https://webdav.example.com/hermes-sync
+  prefix: default-profile
+```
+
+The default harness uses an unauthenticated fake WebDAV service under a
+temporary prefix. It validates the protocol subset locally and does not contact
+a real WebDAV server.
+
+## S3/R2 Remote Configuration
+
+For generic S3-compatible remotes, including Cloudflare R2, keep access keys
+out of `config.yaml` and set them in the local environment:
+
+```bash
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_SESSION_TOKEN=... # optional
+```
+
+Profile config contains only non-secret routing data:
+
+```yaml
+sync:
+  remote: r2
+  bucket: your-hermes-sync-bucket
+  endpoint: https://account-id.r2.cloudflarestorage.com
+  region: auto
+  prefix: default-profile
+```
+
+Use `remote: s3` for standard S3-compatible services. The default harness uses
+an unsigned fake S3-compatible service with a temporary prefix and never
+contacts real cloud storage.
+
 ## Project Tracking
 
 - `feature_list.json` is the machine-readable feature inventory, progress
@@ -176,6 +272,8 @@ python3 -m harness.oss_live_acceptance
   exclusions.
 - `docs/harness.md` defines the executable harness contract and required
   scenarios.
+- `docs/deployment.md` defines the development install and test deployment
+  checklist.
 - `docs/hermes-agent-integration.md` records compatibility findings from the
   local Hermes Agent checkout.
 - `docs/feature-list.md` is the feature inventory and harness coverage matrix.

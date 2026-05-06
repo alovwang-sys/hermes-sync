@@ -61,7 +61,7 @@ Exit criteria:
 - No blocked paths or runtime files enter manifests, remotes, or traces.
 - Secret-like config export is guarded with dedicated key-level harness
   coverage.
-- Session snapshots move between profiles without syncing SQLite files.
+- Opt-in session snapshots move between profiles without syncing SQLite files.
 
 ## Phase 3: Continuous Sync
 
@@ -124,22 +124,38 @@ Exit criteria:
   reference backend.
 - Add Alibaba Cloud OSS backend using the OSS S3-compatible API. Complete for
   fake OSS backend conformance and `remote: oss` sync-engine config round trip.
+  The implementation-complete contract is explicitly limited to the local fake
+  conformance server until live acceptance is run.
 - Keep OSS credentials local-only through environment variables; profile config
   may contain bucket, endpoint, region, and prefix but not access keys.
 - Add gated live OSS acceptance for an isolated bucket prefix when credentials
   are intentionally supplied. Runner exists as `python3 -m
-  harness.oss_live_acceptance`; live execution requires user-provided cloud
-  credentials and is outside the default harness.
+  harness.oss_live_acceptance`; live execution is specified/manual, requires
+  user-provided cloud credentials, and is outside the default harness.
+- Add WebDAV backend. Complete for fake WebDAV backend conformance and
+  `remote: webdav` sync-engine config round trip. The implementation-complete
+  contract is explicitly limited to the local fake conformance server until any
+  live WebDAV acceptance is separately specified.
+- Add generic S3/R2 backend. Complete for fake S3-compatible backend
+  conformance and `remote: r2` sync-engine config round trip. The
+  implementation-complete contract is explicitly limited to the local fake
+  conformance server until live S3/R2 acceptance is separately specified.
 - Add Git backend.
-- Add WebDAV backend.
-- Add generic S3/R2 backend after OSS semantics settle.
 - Keep local folder backend as the reference behavior.
 - Add optional end-to-end encryption after backend contracts are stable.
 
 Exit criteria:
 
-- Backend conformance tests pass against local, OSS, Git, WebDAV, and generic
-  S3/R2.
+- Backend conformance tests pass against local, OSS fake conformance, WebDAV
+  fake conformance, generic S3/R2 fake conformance, and Git.
+- OSS backend implementation is complete when fake conformance and the
+  `remote: oss` fake round trip pass.
+- WebDAV backend implementation is complete when fake conformance and the
+  `remote: webdav` fake round trip pass.
+- S3/R2 backend implementation is complete when fake conformance and the
+  `remote: r2` fake round trip pass.
+- Live Alibaba Cloud acceptance remains a separate specified/manual gate until
+  it is intentionally run against a real isolated bucket prefix.
 - Backend errors are surfaced without corrupting manifests.
 - Live cloud acceptance is gated, uses an isolated test prefix, and never
   uploads `.env`, database files, logs, caches, tmp files, locks, watcher
