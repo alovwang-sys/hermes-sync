@@ -375,14 +375,14 @@ class OssBackend:
 
     @staticmethod
     def _env_credentials() -> OssCredentials | None:
-        access_key_id = os.environ.get("ALIBABA_CLOUD_ACCESS_KEY_ID")
-        access_key_secret = os.environ.get("ALIBABA_CLOUD_ACCESS_KEY_SECRET")
+        access_key_id = os.environ.get("ALIBABA_CLOUD_ACCESS_KEY_ID") or os.environ.get("OSS_ACCESS_KEY_ID")
+        access_key_secret = os.environ.get("ALIBABA_CLOUD_ACCESS_KEY_SECRET") or os.environ.get("OSS_ACCESS_KEY_SECRET")
         if not access_key_id or not access_key_secret:
             return None
         return OssCredentials(
             access_key_id=access_key_id,
             access_key_secret=access_key_secret,
-            security_token=os.environ.get("ALIBABA_CLOUD_SECURITY_TOKEN"),
+            security_token=os.environ.get("ALIBABA_CLOUD_SECURITY_TOKEN") or os.environ.get("OSS_SECURITY_TOKEN"),
         )
 
     @staticmethod
