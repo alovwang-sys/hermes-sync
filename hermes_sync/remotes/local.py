@@ -58,6 +58,9 @@ class LocalFolderBackend:
         object_dir.mkdir(parents=True, exist_ok=True)
         content_path = object_dir / "content"
         metadata_path = object_dir / "metadata.json"
+        tombstone_path = self._tombstone_path(metadata.scope, metadata.object_id)
+        if tombstone_path.exists():
+            tombstone_path.unlink()
         self._write_bytes_if_changed(content_path, content)
         self._write_json_if_changed(metadata_path, metadata.as_dict())
         return metadata

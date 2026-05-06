@@ -94,6 +94,7 @@
     "harness_roots": [
       "temporary Hermes profiles",
       "temporary local-folder remotes",
+      "temporary fake OSS HTTP remotes",
       "sanitized fixtures",
       "sanitized traces"
     ],
@@ -111,7 +112,7 @@
       "lock files",
       "runtime-only state"
     ],
-    "json_validation_command": "python -m json.tool feature_list.json",
+    "json_validation_command": "python3 -m json.tool feature_list.json",
     "required_execution_gates": [
       "validate feature_list.json",
       "create isolated profiles and remotes",
@@ -124,7 +125,7 @@
   },
   "last_harness_run": {
     "date": "2026-05-06",
-    "command": "env PYTHONDONTWRITEBYTECODE=1 python -m harness.run",
+    "command": "python3 -m harness.run",
     "status": "completed",
     "completed_scenarios": [
       "plugin_manifest_loads",
@@ -147,11 +148,27 @@
       "runtime_file_exclusion",
       "session_snapshot",
       "local_remote_object_round_trip",
+      "backend_conformance",
+      "oss_backend_conformance",
+      "oss_sync_config_round_trip",
       "outbox_processing",
       "inbox_staging_before_import",
       "push_idempotent",
       "pull_idempotent",
-      "once_idempotent"
+      "once_idempotent",
+      "tombstone_delete_propagation",
+      "text_conflict",
+      "binary_conflict",
+      "json_structured_merge",
+      "yaml_config_merge",
+      "text_three_way_merge",
+      "restore_previous_version",
+      "continuous_sync",
+      "pause_state_local_only",
+      "hook_wake_debounce",
+      "mtime_polling_reconcile",
+      "sync_lock_single_flight",
+      "pause_resume_drains_pending"
     ]
   },
   "features": [
@@ -167,7 +184,7 @@
       "id": "slash.sync",
       "phase": 1,
       "surface": ["/sync status", "/sync now", "/sync pause", "/sync conflicts"],
-      "status": "in_progress",
+      "status": "complete",
       "core_compatibility": "usable",
       "harness_scenarios": ["slash_status_readonly", "slash_router_parity"]
     },
@@ -175,7 +192,7 @@
       "id": "tools.sync",
       "phase": 1,
       "surface": ["sync_status", "sync_now", "sync_list_conflicts", "sync_restore_version"],
-      "status": "in_progress",
+      "status": "complete",
       "core_compatibility": "usable",
       "harness_scenarios": ["tool_schema_registration", "tool_readonly_status"]
     },
@@ -263,41 +280,77 @@
       "id": "continuous.sync",
       "phase": 3,
       "surface": ["continuous worker", "/sync pause"],
-      "status": "not_started",
+      "status": "complete",
       "core_compatibility": "usable",
       "harness_scenarios": ["continuous_sync", "pause_state_local_only"]
+    },
+    {
+      "id": "continuous.auto_trigger",
+      "phase": 3,
+      "surface": ["worker wake", "debounce", "local sync lock", "allowlisted mtime polling"],
+      "status": "complete",
+      "core_compatibility": "usable",
+      "harness_scenarios": [
+        "hook_wake_debounce",
+        "mtime_polling_reconcile",
+        "sync_lock_single_flight",
+        "pause_resume_drains_pending"
+      ]
     },
     {
       "id": "tombstones",
       "phase": 4,
       "surface": ["manifest tombstones", "remote tombstones"],
-      "status": "not_started",
+      "status": "complete",
       "core_compatibility": "usable",
       "harness_scenarios": ["tombstone_delete_propagation"]
     },
     {
       "id": "conflicts",
       "phase": 4,
-      "surface": ["/sync conflicts", "sync_list_conflicts", "sync/conflicts"],
-      "status": "not_started",
+      "surface": ["/sync conflicts", "sync_list_conflicts", "sync/conflicts", "structured merge"],
+      "status": "complete",
       "core_compatibility": "usable",
-      "harness_scenarios": ["text_conflict", "binary_conflict"]
+      "harness_scenarios": [
+        "text_conflict",
+        "binary_conflict",
+        "json_structured_merge",
+        "yaml_config_merge",
+        "text_three_way_merge"
+      ]
     },
     {
       "id": "version.restore",
       "phase": 4,
       "surface": ["sync_restore_version", "version history"],
-      "status": "not_started",
+      "status": "complete",
       "core_compatibility": "usable",
       "harness_scenarios": ["restore_previous_version"]
     },
     {
       "id": "remote.backends",
       "phase": 5,
-      "surface": ["Git", "WebDAV", "S3/R2"],
-      "status": "not_started",
-      "core_compatibility": "usable_behind_remote_backend_protocol",
-      "harness_scenarios": ["backend_conformance"]
+      "surface": ["RemoteBackend conformance", "local-folder", "Alibaba Cloud OSS", "Git", "WebDAV", "S3/R2"],
+      "status": "in_progress",
+      "core_compatibility": "local_and_oss_fake_conformance_complete_live_oss_acceptance_runner_ready",
+      "harness_scenarios": [
+        "backend_conformance",
+        "oss_backend_conformance",
+        "oss_sync_config_round_trip",
+        "oss_live_acceptance"
+      ]
+    },
+    {
+      "id": "aliyun.oss.remote",
+      "phase": 5,
+      "surface": ["remote: oss", "Alibaba Cloud OSS S3-compatible API", "OSS env credentials"],
+      "status": "in_progress",
+      "core_compatibility": "usable_via_remote_backend_protocol_default_harness_uses_fake_oss",
+      "harness_scenarios": [
+        "oss_backend_conformance",
+        "oss_sync_config_round_trip",
+        "oss_live_acceptance"
+      ]
     },
     {
       "id": "core.hooks.future",
@@ -441,38 +494,88 @@
     },
     {
       "id": "tombstone_delete_propagation",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Deletes create tombstones and import as explicit deletes."
     },
     {
       "id": "text_conflict",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Concurrent text edits create deterministic conflict records and conflict files."
     },
     {
       "id": "binary_conflict",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Latest binary file wins while preserving a conflict copy."
     },
     {
+      "id": "json_structured_merge",
+      "status": "complete",
+      "expected": "Non-overlapping JSON object edits merge without creating a pending conflict and push as a new head."
+    },
+    {
+      "id": "yaml_config_merge",
+      "status": "complete",
+      "expected": "Non-overlapping YAML config edits merge without syncing runtime-only state."
+    },
+    {
+      "id": "text_three_way_merge",
+      "status": "complete",
+      "expected": "Non-overlapping text line edits merge with a three-way base and push as a new head."
+    },
+    {
       "id": "continuous_sync",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Allowed changes sync after one interval and runtime files stay local."
     },
     {
       "id": "pause_state_local_only",
-      "status": "not_started",
+      "status": "complete",
       "expected": "Pause and resume state is stored only on the local device and never uploaded."
     },
     {
+      "id": "hook_wake_debounce",
+      "status": "complete",
+      "expected": "Session and tool hooks wake the continuous worker, debounce rapid changes, and run one sync cycle for the coalesced batch."
+    },
+    {
+      "id": "mtime_polling_reconcile",
+      "status": "complete",
+      "expected": "Allowlisted config/artifact mtime polling detects external edits without scanning or uploading runtime-only state."
+    },
+    {
+      "id": "sync_lock_single_flight",
+      "status": "complete",
+      "expected": "Concurrent wake events do not run overlapping sync cycles and leave no uploaded lock files."
+    },
+    {
+      "id": "pause_resume_drains_pending",
+      "status": "complete",
+      "expected": "Wake events received while paused remain local and resume triggers one catch-up sync cycle."
+    },
+    {
       "id": "restore_previous_version",
-      "status": "not_started",
+      "status": "complete",
       "expected": "A previous object version can be restored without corrupting manifest state."
     },
     {
       "id": "backend_conformance",
-      "status": "not_started",
-      "expected": "All remote backends pass the same object, manifest, tombstone, conflict, and idempotency contract."
+      "status": "complete",
+      "expected": "The local-folder reference backend passes reusable object, tombstone, idempotency, and path-safety conformance checks."
+    },
+    {
+      "id": "oss_backend_conformance",
+      "status": "complete",
+      "expected": "The OSS backend passes the reusable RemoteBackend conformance suite against a temporary in-memory fake OSS HTTP service without real credentials."
+    },
+    {
+      "id": "oss_sync_config_round_trip",
+      "status": "complete",
+      "expected": "A profile configured with remote: oss pushes and pulls allowed config/artifact objects through a temporary fake OSS service without uploading secrets or runtime-only state."
+    },
+    {
+      "id": "oss_live_acceptance",
+      "status": "in_progress",
+      "expected": "A gated manual runner against a real Alibaba Cloud OSS bucket uses only local environment credentials and an isolated test prefix, then verifies cleanup and no secret/runtime uploads."
     },
     {
       "id": "core_hook_contract",
@@ -481,9 +584,7 @@
     }
   ],
   "immediate_next_actions": [
-    "Implement tombstone propagation and conflict creation on top of the local-folder backend.",
-    "Add version-history restore coverage once tombstones and conflicts are deterministic.",
-    "Start Phase 3 continuous sync scheduling while keeping watcher state local.",
+    "Run the gated live OSS acceptance command against a real Alibaba Cloud bucket and isolated prefix when credentials are intentionally provided.",
     "Treat top-level hermes sync as blocked until Hermes core exposes generic plugin CLI registration before argparse parsing."
   ]
 }

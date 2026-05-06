@@ -26,7 +26,7 @@ considered complete.
 | Manifest database | 1 | `manifest.sqlite` | Complete | Manifest schema is created and queryable; excluded paths are absent. |
 | Scope scanner | 1 | `/sync status`, `sync_status` | Complete | Allowlist, ignore rules, traversal rejection, and symlink escape rejection. |
 | Status command | 1 | CLI, slash command, `sync_status` tool | Complete | Empty profile reports no dirty objects; status is read-only. |
-| Slash command router | 1 | `/sync status`, `/sync now`, `/sync pause`, `/sync conflicts` | In progress | `/sync status` and `/sync now` route to shared behavior; pause/conflicts remain later work. |
+| Slash command router | 1 | `/sync status`, `/sync now`, `/sync pause`, `/sync resume`, `/sync conflicts` | Complete | `/sync` routes status, now, pause/resume, and conflict listing to shared behavior. |
 | Local folder backend | 2 | `RemoteBackend` | Complete | Temporary local remote receives only allowed objects. |
 | Outbox and inbox | 2 | `sync_engine` | Complete | Push writes outbox objects; pull stages remote objects before import. |
 | `push` | 2 | `/sync now`, future `hermes sync push` | Complete | Repeated push is idempotent and updates manifest revisions correctly. |
@@ -35,13 +35,15 @@ considered complete.
 | Config sync | 2 | `config` scope | Complete | Allowed config syncs; key-level secret-like config is skipped. |
 | Artifact sync | 2 | `artifacts` scope | Complete | Text artifacts move between two temporary profiles; runtime files stay local. |
 | Session snapshots | 2 | `sessions` scope, future `on_session_end` | Complete | Session JSON is exported through read-only SQLite; `state.db`, WAL, and SHM files are never synced. |
-| Tombstones | 4 | Manifest and remote metadata | Not started | Deletes create tombstones and import as deletes without silent loss. |
-| Conflict listing | 4 | `/sync conflicts`, `sync_list_conflicts` tool, future `hermes sync conflicts` | Not started | Concurrent edits produce deterministic conflict records. |
-| Conflict files | 4 | `conflicts/` | Not started | Failed text merges create `name.sync-conflict-YYYYMMDD-HHMMSS.ext`. |
-| Version restore | 4 | `sync_restore_version` tool, future `hermes sync restore` | Not started | Previous versions can be restored without corrupting manifest state. |
-| Continuous sync | 3 | continuous worker, future `hermes sync --continuous` | Not started | File changes sync after one interval; runtime lock files are not uploaded. |
-| Pause and resume | 3 | `/sync pause`, future CLI pause/resume | Not started | Pause state remains local to the device and is never uploaded. |
-| Backend conformance | 5 | Git, WebDAV, S3/R2 backends | Not started | All backends pass the same object, tombstone, and conflict contract tests. |
+| Tombstones | 4 | Manifest and remote metadata | Complete | Deletes create tombstones and import as deletes without silent loss. |
+| Conflict listing | 4 | `/sync conflicts`, `sync_list_conflicts` tool, future `hermes sync conflicts` | Complete | Concurrent overlapping edits produce deterministic conflict records. |
+| Conflict files and merge | 4 | `sync/conflicts/`, structured merge, text merge | Complete | JSON/YAML and non-overlapping text edits merge; overlapping text and binary edits create `name.sync-conflict-YYYYMMDD-HHMMSS.ext` copies under plugin-owned state. |
+| Version restore | 4 | `sync_restore_version` tool, future `hermes sync restore` | Complete | Previous versions can be restored without corrupting manifest state. |
+| Continuous sync | 3 | continuous worker, future `hermes sync --continuous` | Complete | File changes sync after one interval; runtime lock files are not uploaded. |
+| Continuous auto-trigger | 3 | worker wake, debounce, local sync lock, allowlisted mtime polling | Complete | Hook wakeups and mtime polling trigger sync promptly without profile-wide mirroring. |
+| Pause and resume | 3 | `/sync pause`, future CLI pause/resume | Complete | Pause state remains local to the device and is never uploaded. |
+| Backend conformance | 5 | RemoteBackend conformance, local-folder, OSS, future Git/WebDAV/S3/R2 backends | In progress | Local-folder and OSS fake backends pass reusable object, tombstone, idempotency, and path-safety checks; future backends must pass the same suite. |
+| Alibaba Cloud OSS backend | 5 | `remote: oss`, OSS S3-compatible API | In progress | Fake OSS conformance and `remote: oss` config round trip pass; live Alibaba Cloud acceptance has a gated runner outside the default harness. |
 | Core hook proposal | 6 | Hermes core plugin hooks | Blocked | Only generic hooks are proposed; sync policy remains in this plugin. |
 
 ## Harness Features
@@ -49,20 +51,21 @@ considered complete.
 | Feature | Status | Required Behavior |
 | --- | --- | --- |
 | Temporary profile factory | Complete | Creates isolated profile roots and refuses real `~/.hermes` by default. |
-| Temporary remote factory | Complete | Creates isolated local-folder remotes under the system temp directory. |
-| Fixture seeding | Complete through Phase 2 | Seeds config, artifacts, excluded files, and sanitized session fixtures without secrets. |
+| Temporary remote factory | Complete | Creates isolated local-folder remotes and temporary fake OSS HTTP remotes under the system temp directory. |
+| Fixture seeding | Complete through Phase 4 merge plus Phase 3 auto-trigger | Seeds config, artifacts, excluded files, sanitized session fixtures, conflicts, structured/text merges, tombstones, restore fixtures, hook wakeups, mtime edits, and paused pending work without secrets. |
 | Path guard | Complete | Rejects traversal, absolute escapes, and symlink escapes. |
 | Ignore-rule assertions | Complete | Proves blocked patterns never enter manifest, traces, or remote objects. |
 | Command adapter | In progress | Runs plugin APIs with structured results; top-level CLI waits on Hermes core. |
 | Manifest inspector | Complete | Reads `manifest.sqlite` and reports object state without mutation. |
 | Remote inspector | Complete | Lists remote objects and tombstones without importing them. |
 | Trace capture | In progress | Records phases, counts, and errors without object content or secrets. |
-| Scenario runner | Complete through Phase 2 snapshots | Runs required scenarios from `docs/harness.md` repeatably. |
+| Scenario runner | Complete through Phase 5 local conformance | Runs required scenarios from `docs/harness.md` repeatably. |
 | Idempotency checks | Complete | Re-runs `push`, `pull`, and `once` and asserts no extra changes. |
-| Tombstone verifier | Not started | Confirms delete propagation uses explicit tombstones. |
-| Conflict injector | Not started | Creates concurrent edits and verifies conflict records and files. |
-| Continuous sync supervisor | Not started | Starts, observes, and stops continuous sync cleanly. |
-| Backend conformance runner | Not started | Reuses the same suite for local, Git, WebDAV, and S3/R2 backends. |
+| Tombstone verifier | Complete | Confirms delete propagation uses explicit tombstones. |
+| Conflict injector | Complete | Creates concurrent edits and verifies merge results, conflict records, and conflict files. |
+| Continuous sync supervisor | Complete | Runs a bounded continuous sync loop and verifies pause state stays local. |
+| Auto-trigger supervisor | Complete | Verifies debounce, single-flight locking, allowlisted mtime polling, and pause/resume pending drain. |
+| Backend conformance runner | Complete for local-folder and fake OSS | Reuses the same suite for local, OSS, Git, WebDAV, and generic S3/R2 backends. |
 
 ## Completion Gates
 

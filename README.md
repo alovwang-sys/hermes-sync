@@ -46,6 +46,7 @@ hermes_sync/
   __init__.py
   cli.py
   sync_engine.py
+  scheduler.py
   session_snapshots.py
   manifest.py
   scopes.py
@@ -53,6 +54,7 @@ hermes_sync/
   crypto.py
   remotes/
     local.py
+    oss.py
     git.py
     webdav.py
     s3.py
@@ -94,7 +96,9 @@ Planned tools:
 The implemented surfaces are:
 
 - register `/sync status`
+- register `/sync now`, `/sync pause`, `/sync resume`, and `/sync conflicts`
 - register `sync_status`
+- register `sync_now`, `sync_list_conflicts`, and `sync_restore_version`
 - create `device.json`
 - initialize `manifest.sqlite`
 - scan configured scopes without uploading or importing anything
@@ -105,8 +109,62 @@ The implemented surfaces are:
   snapshot objects
 - export session snapshots from `state.db` through read-only SQLite queries and
   store pulled snapshots under plugin-owned `sync/sessions/` history
-- keep top-level `hermes sync status` as future work until Hermes core exposes
-  a generic plugin CLI-command bridge
+- propagate deletes through explicit manifest and remote tombstones
+- merge non-overlapping JSON/YAML object edits and UTF-8 text line edits, with
+  pending conflict records and plugin-owned conflict copies for overlapping
+  text and binary artifact edits
+- store local version history under `sync/versions` and restore previous
+  artifact/config versions through `sync_restore_version`
+- run a bounded continuous sync worker and keep pause/watcher state under
+  plugin-owned local sync metadata
+- wake the continuous worker from session/tool hooks, debounce bursts, reconcile
+  allowlisted config/artifact mtimes, and prevent overlapping sync cycles with
+  a local plugin-owned lock
+- run reusable backend conformance checks against the local-folder reference
+  backend and an OSS backend backed by a fake OSS harness service
+- support `remote: oss` through the `RemoteBackend` protocol for Alibaba Cloud
+  OSS-compatible object storage; live credentials are read only from local
+  environment variables
+- keep top-level `hermes sync ...` as future work until Hermes core exposes a
+  generic plugin CLI-command bridge
+
+## OSS Remote Configuration
+
+For Alibaba Cloud OSS, keep credentials out of `config.yaml` and set them in
+the local environment:
+
+```bash
+export ALIBABA_CLOUD_ACCESS_KEY_ID=...
+export ALIBABA_CLOUD_ACCESS_KEY_SECRET=...
+export ALIBABA_CLOUD_SECURITY_TOKEN=... # optional STS token
+```
+
+Profile config contains only non-secret routing data:
+
+```yaml
+sync:
+  remote: oss
+  bucket: your-hermes-sync-bucket
+  endpoint: https://s3.oss-cn-hangzhou.aliyuncs.com
+  region: cn-hangzhou
+  prefix: hermes-sync/default-profile
+```
+
+The default harness uses an unsigned fake OSS service with a temporary prefix.
+Do not use the harness-only `unsigned` or `path_style` settings for a real OSS
+bucket. For new Alibaba Cloud OSS users in Chinese mainland regions, a custom
+domain may be required for data API operations; keep that domain in
+`endpoint` and keep credentials in local environment variables.
+
+Gated live acceptance is available only when you intentionally provide a real
+bucket and local credentials:
+
+```bash
+export HERMES_SYNC_OSS_BUCKET=...
+export HERMES_SYNC_OSS_ENDPOINT=https://s3.oss-cn-hangzhou.aliyuncs.com
+export HERMES_SYNC_OSS_REGION=cn-hangzhou
+python3 -m harness.oss_live_acceptance
+```
 
 ## Project Tracking
 

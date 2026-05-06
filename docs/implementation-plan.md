@@ -18,7 +18,7 @@ Exit criteria:
 
 - README links to architecture, harness, feature list, progress, and milestone
   docs.
-- `feature_list.json` validates with `python -m json.tool`.
+- `feature_list.json` validates with `python3 -m json.tool`.
 - Harness required scenarios are defined in `feature_list.json` and summarized
   in `docs/harness.md` and `docs/progress.md`.
 - Every planned command or tool in docs exists in `plugin.yaml` or is clearly
@@ -65,50 +65,85 @@ Exit criteria:
 
 ## Phase 3: Continuous Sync
 
-- Implement a plugin continuous sync worker.
-- Add watcher or periodic scan loop.
-- Use `on_session_end` to enqueue snapshots.
-- Use `post_tool_call` to detect important artifacts.
-- Keep pause/resume state local to the device.
+- Implement a plugin continuous sync worker. Complete with a bounded worker
+  around `once`, hook wakeups, debounce, allowlisted mtime polling, and local
+  single-flight locking.
+- Add watcher or periodic scan loop. Complete with allowlisted mtime polling;
+  filesystem watcher integration can come later if it stays app-aware.
+- Use `on_session_end` to enqueue snapshots. Complete for local wake state
+  without uploading hook state.
+- Use `post_tool_call` to detect important artifacts. Complete for
+  artifact-producing path hints that resolve inside allowed artifact roots.
+- Keep pause/resume state local to the device. Complete with
+  `sync/watcher-state.json`.
 - Keep `hermes sync --continuous` as future top-level CLI work until the
   generic plugin CLI bridge exists.
+
+Phase 3 auto-trigger scope is complete:
+
+- Hook wakeups for `on_session_end` and artifact-producing tool events.
+- Short debounce so bursts of events produce one sync cycle.
+- A local single-flight sync lock under plugin-owned state.
+- Allowlisted mtime polling for config and artifact scopes as a fallback
+  for edits made outside Hermes.
+- Keep all worker, lock, debounce, and pending state local under `sync/`.
 
 Exit criteria:
 
 - A changed artifact is pushed automatically.
 - Session end creates an outbox snapshot.
 - Runtime state is not uploaded.
+- Concurrent wake events do not overlap sync cycles.
+- Pause stores pending work locally and resume drains it with one catch-up run.
 
 ## Phase 4: Conflict and History
 
-- Implement tombstones.
-- Store version metadata.
+- Implement tombstones. Complete for local-folder config/artifact objects.
+- Store version metadata and local version contents under `sync/versions`.
 - Implement `/sync conflicts`.
 - Implement `sync_list_conflicts`.
 - Implement `sync_restore_version`.
-- Add JSON config merge.
-- Add text merge and conflict-file fallback.
+- Add JSON/YAML structured merge. Complete for non-overlapping object-key
+  edits, with conflict-copy fallback for overlapping edits.
+- Add text merge and conflict-file fallback. Complete for non-overlapping
+  same-line-count UTF-8 artifact edits, with conflict-copy fallback for
+  overlapping edits and binary content.
 - Keep `hermes sync conflicts` and `hermes sync restore` as future top-level
   CLI work until the generic plugin CLI bridge exists.
 
 Exit criteria:
 
 - Concurrent edits produce deterministic conflict records.
+- Non-overlapping JSON/YAML and text edits merge and push as a new head.
 - Tombstoned objects do not reappear unexpectedly.
 - Restore can recover a previous version.
 
 ## Phase 5: Remote Backends
 
+- Add reusable backend conformance harness. Complete for the local-folder
+  reference backend.
+- Add Alibaba Cloud OSS backend using the OSS S3-compatible API. Complete for
+  fake OSS backend conformance and `remote: oss` sync-engine config round trip.
+- Keep OSS credentials local-only through environment variables; profile config
+  may contain bucket, endpoint, region, and prefix but not access keys.
+- Add gated live OSS acceptance for an isolated bucket prefix when credentials
+  are intentionally supplied. Runner exists as `python3 -m
+  harness.oss_live_acceptance`; live execution requires user-provided cloud
+  credentials and is outside the default harness.
 - Add Git backend.
 - Add WebDAV backend.
-- Add S3/R2 backend.
+- Add generic S3/R2 backend after OSS semantics settle.
 - Keep local folder backend as the reference behavior.
 - Add optional end-to-end encryption after backend contracts are stable.
 
 Exit criteria:
 
-- Backend conformance tests pass against local, Git, WebDAV, and S3/R2.
+- Backend conformance tests pass against local, OSS, Git, WebDAV, and generic
+  S3/R2.
 - Backend errors are surfaced without corrupting manifests.
+- Live cloud acceptance is gated, uses an isolated test prefix, and never
+  uploads `.env`, database files, logs, caches, tmp files, locks, watcher
+  state, or credentials.
 
 ## Phase 6: Core Hook Extensions
 

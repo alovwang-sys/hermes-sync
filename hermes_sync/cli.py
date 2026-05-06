@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from .manifest import list_conflicts
+from .scheduler import set_paused
 from .status import get_status
 from .sync_engine import SyncConfigurationError, run_once
 
@@ -28,11 +30,35 @@ def route_sync_command(raw_args: str) -> Dict[str, Any]:
                     "deleted": 0,
                 },
             }
-    if subcommand in {"pause", "conflicts"}:
+    if subcommand == "pause":
         return {
-            "status": "not_implemented",
+            "status": "ok",
             "subcommand": subcommand,
-            "message": "This sync subcommand is registered but is not implemented yet.",
+            "scheduler": set_paused(paused=True, reason="slash_command"),
+            "actions": {
+                "uploaded": 0,
+                "downloaded": 0,
+                "imported": 0,
+                "deleted": 0,
+            },
+        }
+    if subcommand == "resume":
+        return {
+            "status": "ok",
+            "subcommand": subcommand,
+            "scheduler": set_paused(paused=False, reason="slash_command"),
+            "actions": {
+                "uploaded": 0,
+                "downloaded": 0,
+                "imported": 0,
+                "deleted": 0,
+            },
+        }
+    if subcommand == "conflicts":
+        return {
+            "status": "ok",
+            "subcommand": subcommand,
+            "conflicts": list_conflicts(),
             "actions": {
                 "uploaded": 0,
                 "downloaded": 0,
@@ -43,7 +69,7 @@ def route_sync_command(raw_args: str) -> Dict[str, Any]:
     return {
         "status": "error",
         "message": f"Unknown /sync subcommand: {subcommand}",
-        "supported": ["status", "now", "pause", "conflicts"],
+        "supported": ["status", "now", "pause", "resume", "conflicts"],
     }
 
 
@@ -97,6 +123,20 @@ def handle_sync_command(raw_args: str) -> str:
                 ),
             ]
         )
+    if data.get("status") == "ok" and data.get("subcommand") == "conflicts":
+        conflicts = data.get("conflicts", [])
+        if not conflicts:
+            return "Hermes Sync conflicts\nNo pending conflicts."
+        return "\n".join(
+            ["Hermes Sync conflicts"]
+            + [
+                f"{item['conflict_id'][:12]} {item['logical_path']} {item.get('conflict_path') or ''}".rstrip()
+                for item in conflicts
+            ]
+        )
+    if data.get("status") == "ok" and data.get("subcommand") in {"pause", "resume"}:
+        state = data.get("scheduler", {})
+        return "Hermes Sync paused" if state.get("paused") else "Hermes Sync resumed"
     if data.get("status") == "ok":
         return format_status(data)
     if data.get("status") == "not_implemented":

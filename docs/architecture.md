@@ -54,6 +54,8 @@ Local plugin state lives under the active Hermes profile:
   outbox/
   inbox/
   conflicts/
+  versions/
+  watcher-state.json
 ```
 
 `device.json`:
@@ -79,9 +81,32 @@ class RemoteBackend:
     def list_tombstones(self): ...
 ```
 
-The first backend should be a local folder backend. Git, WebDAV, and S3/R2 come
-after the object model and conflict rules are stable. Event cursor methods can
-be added after session snapshots and tombstone propagation are reliable.
+The local-folder backend remains the reference backend. The Alibaba Cloud OSS
+backend uses the same `RemoteBackend` protocol through the OSS S3-compatible
+API. Git, WebDAV, and generic S3/R2 come after the object model and conflict
+rules are stable. Event cursor methods can be added after session snapshots
+and tombstone propagation are reliable.
+
+Every backend must pass the shared conformance harness before it is used in
+end-to-end sync scenarios. The conformance suite covers active object
+upload/list/download, replacement upload, explicit tombstones, idempotent
+retries, re-upload after tombstone, and path-safety rejection for unsafe remote
+identifiers. The local-folder backend is the reference implementation.
+
+Remote object storage layout is backend-independent:
+
+```text
+<prefix>/objects/<scope>/<object_id>/metadata.json
+<prefix>/objects/<scope>/<object_id>/content
+<prefix>/tombstones/<scope>/<object_id>.json
+```
+
+For OSS, `bucket`, `endpoint`, `region`, and `prefix` are non-secret routing
+configuration. Access keys and STS tokens are local environment variables only
+and must not be stored in synced profile content, fixtures, traces, or docs.
+The executable harness covers OSS through an in-memory fake OSS service; a live
+Alibaba Cloud bucket remains a gated manual acceptance target with an isolated
+test prefix.
 
 ## Session Sync
 
@@ -116,18 +141,46 @@ Conflict handling is scope-specific:
 
 | Type | Strategy |
 | --- | --- |
-| Text or Markdown artifacts | Three-way merge; failed merge creates a conflict file. |
-| JSON or YAML config | Merge by key; conflicting fields keep local and remote variants. |
+| Text or Markdown artifacts | Non-overlapping line edits use a three-way merge from the last common synced version; overlapping edits fall back to remote-wins import with a plugin-owned local conflict copy. |
+| JSON or YAML config/artifacts | Non-overlapping object-key edits merge recursively from the last common synced version; overlapping scalar/list edits fall back to conflict preservation. |
 | Sessions | Do not merge SQLite files; keep multiple branches or merge events later. |
 | Binary artifacts | Last writer wins, with a conflict copy preserved. |
 | Skills or plugins | Do not auto-overwrite version conflicts; ask the user. |
 | Secrets | Out of scope by default. |
 
-Conflict files use this format:
+Conflict files are stored under plugin-owned `sync/conflicts/` and use this
+format:
 
 ```text
 name.sync-conflict-YYYYMMDD-HHMMSS.json
 ```
+
+Successful merge results are written locally, recorded as dirty against the
+new remote base revision, and pushed as a new head on the next `push` or
+`once`. The merge path keeps the previous local and remote versions under
+`sync/versions/` and does not upload conflict copies or runtime metadata.
+
+Deletes are propagated as explicit tombstone metadata in the manifest and
+remote backend. A tombstone hides the active remote object, and a later upload
+of a recreated object clears the remote tombstone instead of silently
+resurrecting deleted content.
+
+Version contents are stored locally under plugin-owned `sync/versions/`.
+`sync_restore_version` restores supported config/artifact content from that
+local history, marks the restored object dirty when it differs from the remote
+head, and leaves session snapshots as read-only history.
+
+Continuous sync state, including pause state, pending session hints, pending
+artifact wakeups, debounce state, and mtime polling signatures, is stored only
+in `sync/watcher-state.json`. That path is under the blocked plugin-owned
+`sync/` tree and must never be uploaded.
+
+The continuous worker uses a hybrid trigger model: Hermes hooks wake the worker
+when sessions end or tools create allowed artifacts, a short debounce coalesces
+bursts, and allowlisted mtime polling catches config or artifact edits made
+outside Hermes. A local single-flight lock under `sync/sync.lock` prevents
+overlapping sync cycles. All lock, pending, debounce, and polling state stays
+under plugin-owned `sync/` metadata.
 
 ## Security Defaults
 

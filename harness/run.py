@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Callable
 
+from .backend_conformance import run_backend_conformance
+from .fake_oss import FakeOssServer
 from .sync_harness import ScenarioFailure, ScenarioResult, SyncHarness, require
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +63,38 @@ def run() -> dict:
                 )
                 chunks.append(content.decode("utf-8", errors="replace"))
             return "\n".join(chunks)
+
+        def remote_object_by_path(remote_path: Path, logical_path: str) -> dict:
+            matches = [
+                obj
+                for obj in harness.list_remote_objects(remote_path)
+                if obj["logical_path"] == logical_path
+            ]
+            require(len(matches) == 1, f"remote object not found once: {logical_path}")
+            return matches[0]
+
+        def write_fake_oss_config(profile: Path, server: FakeOssServer, prefix: str) -> None:
+            (profile / "config.yaml").write_text(
+                "plugins:\n"
+                "  enabled:\n"
+                "    - hermes-sync\n"
+                "sync:\n"
+                "  remote: oss\n"
+                f"  bucket: {server.bucket}\n"
+                f"  endpoint: {server.endpoint}\n"
+                f"  prefix: {prefix}\n"
+                "  unsigned: true\n"
+                "  path_style: true\n"
+                "  scopes:\n"
+                "    config: true\n"
+                "    sessions: true\n"
+                "    memory: true\n"
+                "    artifacts: true\n"
+                "    skills: true\n"
+                "    plugins: false\n"
+                "    secrets: false\n",
+                encoding="utf-8",
+            )
 
         def plugin_manifest_loads() -> str:
             manager = harness.load_plugin_manager(device_a)
@@ -353,6 +389,71 @@ def run() -> dict:
             require(len(tombstones) == 1, "tombstone was not listed")
             return "local-folder backend uploads, lists, downloads, and tombstones one object"
 
+        def backend_conformance() -> str:
+            from hermes_sync.remotes import LocalFolderBackend
+
+            conformance_remote = harness.make_remote("backend-conformance-local")
+            return run_backend_conformance(
+                backend_name="local-folder",
+                backend_factory=lambda: LocalFolderBackend(conformance_remote),
+                remote_root=conformance_remote,
+            )
+
+        def oss_backend_conformance() -> str:
+            from hermes_sync.remotes import OssBackend
+
+            with FakeOssServer() as server:
+                return run_backend_conformance(
+                    backend_name="oss-fake",
+                    backend_factory=lambda: OssBackend(
+                        bucket=server.bucket,
+                        endpoint=server.endpoint,
+                        prefix="hermes-sync/conformance",
+                        unsigned=True,
+                        path_style=True,
+                    ),
+                    remote_root=None,
+                )
+
+        def oss_sync_config_round_trip() -> str:
+            from hermes_sync.remotes import OssBackend
+
+            with FakeOssServer() as server:
+                prefix = "hermes-sync/e2e"
+                source = harness.make_profile("oss-source")
+                target = harness.make_profile("oss-target")
+                write_fake_oss_config(source, server, prefix)
+                write_fake_oss_config(target, server, prefix)
+                artifact = source / "artifacts" / "oss.txt"
+                artifact.parent.mkdir(exist_ok=True)
+                artifact.write_text("OSS fake round trip fixture.\n", encoding="utf-8")
+
+                push = harness.run_push(source)
+                require(push["status"] == "ok", "OSS-configured push did not complete")
+                backend = OssBackend(
+                    bucket=server.bucket,
+                    endpoint=server.endpoint,
+                    prefix=prefix,
+                    unsigned=True,
+                    path_style=True,
+                )
+                remote_paths = {metadata.logical_path for metadata in backend.list_objects()}
+                require("artifacts/oss.txt" in remote_paths, "OSS remote did not receive artifact")
+                require("config.yaml" in remote_paths, "OSS remote did not receive safe config")
+
+                pull = harness.run_pull(target)
+                require(pull["status"] == "ok", "OSS-configured pull did not complete")
+                imported = target / "artifacts" / "oss.txt"
+                require(imported.exists(), "OSS pull did not import artifact")
+                require(
+                    imported.read_text(encoding="utf-8") == "OSS fake round trip fixture.\n",
+                    "OSS imported content did not match",
+                )
+                payload = json.dumps([metadata.as_dict() for metadata in backend.list_objects()], sort_keys=True)
+                for marker in BLOCKED_MARKERS:
+                    require(marker not in payload, f"OSS remote metadata included excluded marker {marker}")
+            return "remote: oss config pushes and pulls through a fake OSS service without secrets"
+
         def outbox_processing() -> str:
             result = harness.run_push(device_a, remote)
             require(result["status"] == "ok", "push did not complete")
@@ -416,6 +517,529 @@ def run() -> dict:
             require(second["staging"]["inbox"] == 0, "second once restaged inbox objects")
             return "second once run makes no changes"
 
+        def tombstone_delete_propagation() -> str:
+            tombstone_remote = harness.make_remote("tombstone-delete")
+            source = harness.make_profile("tombstone-source", tombstone_remote)
+            target = harness.make_profile("tombstone-target", tombstone_remote)
+            artifact = source / "artifacts" / "delete-me.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("Tombstone fixture.\n", encoding="utf-8")
+            push = harness.run_push(source, tombstone_remote)
+            require(push["status"] == "ok", "initial tombstone push failed")
+            pull = harness.run_pull(target, tombstone_remote)
+            require(pull["status"] == "ok", "initial tombstone pull failed")
+            require((target / "artifacts" / "delete-me.txt").exists(), "target artifact was not imported")
+
+            artifact.unlink()
+            delete_push = harness.run_push(source, tombstone_remote)
+            require(delete_push["status"] == "ok", "delete push failed")
+            require(delete_push["actions"]["deleted"] == 1, "delete push did not upload one tombstone")
+            active_paths = {obj["logical_path"] for obj in harness.list_remote_objects(tombstone_remote)}
+            require("artifacts/delete-me.txt" not in active_paths, "tombstoned object remained active")
+            tombstones = harness.list_remote_tombstones(tombstone_remote)
+            require(len(tombstones) == 1, "remote tombstone was not listed")
+            delete_pull = harness.run_pull(target, tombstone_remote)
+            require(delete_pull["status"] == "ok", "delete pull failed")
+            require(delete_pull["actions"]["deleted"] == 1, "delete pull did not delete one local file")
+            require(not (target / "artifacts" / "delete-me.txt").exists(), "target artifact survived tombstone pull")
+            second_pull = harness.run_pull(target, tombstone_remote)
+            require(second_pull["actions"]["deleted"] == 0, "second tombstone pull was not idempotent")
+            return "deletes propagate through explicit remote and manifest tombstones"
+
+        def text_conflict() -> str:
+            conflict_remote = harness.make_remote("text-conflict")
+            source = harness.make_profile("text-conflict-source", conflict_remote)
+            target = harness.make_profile("text-conflict-target", conflict_remote)
+            artifact = source / "artifacts" / "conflict.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("Base text.\n", encoding="utf-8")
+            harness.run_push(source, conflict_remote)
+            harness.run_pull(target, conflict_remote)
+
+            artifact.write_text("Remote text.\n", encoding="utf-8")
+            harness.run_push(source, conflict_remote)
+            target_artifact = target / "artifacts" / "conflict.txt"
+            target_artifact.write_text("Local text.\n", encoding="utf-8")
+            pull = harness.run_pull(target, conflict_remote)
+            require(pull["status"] == "ok", "conflict pull failed")
+            require(target_artifact.read_text(encoding="utf-8") == "Remote text.\n", "remote text did not win")
+            conflicts = harness.list_conflicts(target)
+            require(len(conflicts) == 1, "text conflict was not recorded once")
+            tool_conflicts = harness.run_tool_conflicts(target)
+            require(len(tool_conflicts["conflicts"]) == 1, "sync_list_conflicts did not report the text conflict")
+            slash_conflicts = harness.run_slash_sync(target, "conflicts")
+            require(conflicts[0]["conflict_id"][:12] in slash_conflicts, "/sync conflicts did not show the text conflict")
+            conflict_path = target / conflicts[0]["conflict_path"]
+            require(conflict_path.exists(), "text conflict copy was not written")
+            require(conflict_path.read_text(encoding="utf-8") == "Local text.\n", "text conflict copy lost local content")
+            require(conflicts[0]["strategy"] == "remote_wins_preserve_local_text", "text conflict strategy was not recorded")
+            return "concurrent text edits preserve a local conflict copy and record a pending conflict"
+
+        def binary_conflict() -> str:
+            conflict_remote = harness.make_remote("binary-conflict")
+            source = harness.make_profile("binary-conflict-source", conflict_remote)
+            target = harness.make_profile("binary-conflict-target", conflict_remote)
+            artifact = source / "artifacts" / "conflict.bin"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_bytes(b"\x00base\xff")
+            harness.run_push(source, conflict_remote)
+            harness.run_pull(target, conflict_remote)
+
+            artifact.write_bytes(b"\x00remote\xff")
+            harness.run_push(source, conflict_remote)
+            target_artifact = target / "artifacts" / "conflict.bin"
+            target_artifact.write_bytes(b"\x00local\xff")
+            pull = harness.run_pull(target, conflict_remote)
+            require(pull["status"] == "ok", "binary conflict pull failed")
+            require(target_artifact.read_bytes() == b"\x00remote\xff", "remote binary did not win")
+            conflicts = harness.list_conflicts(target)
+            require(len(conflicts) == 1, "binary conflict was not recorded once")
+            conflict_path = target / conflicts[0]["conflict_path"]
+            require(conflict_path.exists(), "binary conflict copy was not written")
+            require(conflict_path.read_bytes() == b"\x00local\xff", "binary conflict copy lost local content")
+            require(conflicts[0]["strategy"] == "remote_wins_preserve_local_binary", "binary conflict strategy was not recorded")
+            return "concurrent binary edits preserve a conflict copy while remote content wins"
+
+        def json_structured_merge() -> str:
+            merge_remote = harness.make_remote("json-structured-merge")
+            source = harness.make_profile("json-merge-source", merge_remote)
+            target = harness.make_profile("json-merge-target", merge_remote)
+            artifact = source / "artifacts" / "settings.json"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "local": "base",
+                        "remote": "base",
+                        "shared": {"enabled": True},
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            harness.run_push(source, merge_remote)
+            harness.run_pull(target, merge_remote)
+
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "local": "base",
+                        "remote": "remote-change",
+                        "shared": {"enabled": True},
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            harness.run_push(source, merge_remote)
+            target_artifact = target / "artifacts" / "settings.json"
+            target_artifact.write_text(
+                json.dumps(
+                    {
+                        "local": "local-change",
+                        "remote": "base",
+                        "shared": {"enabled": True},
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            pull = harness.run_pull(target, merge_remote)
+            require(pull["status"] == "ok", "JSON merge pull failed")
+            merged = json.loads(target_artifact.read_text(encoding="utf-8"))
+            require(merged["local"] == "local-change", "JSON merge lost local change")
+            require(merged["remote"] == "remote-change", "JSON merge lost remote change")
+            require(not harness.list_conflicts(target), "JSON structured merge created a conflict")
+            push = harness.run_push(target, merge_remote)
+            require(push["actions"]["uploaded"] == 1, "JSON merged content was not pushed")
+            metadata = remote_object_by_path(merge_remote, "artifacts/settings.json")
+            remote_merged = json.loads(
+                harness.read_remote_object_content(
+                    merge_remote, metadata["scope"], metadata["object_id"]
+                ).decode("utf-8")
+            )
+            require(remote_merged == merged, "remote did not receive JSON merged content")
+            return "non-overlapping JSON object edits merge and push as a new head"
+
+        def yaml_config_merge() -> str:
+            merge_remote = harness.make_remote("yaml-config-merge")
+            source = harness.make_profile("yaml-merge-source", merge_remote)
+            target = harness.make_profile("yaml-merge-target", merge_remote)
+            harness.run_push(source, merge_remote)
+            harness.run_pull(target, merge_remote)
+
+            source_config = source / "config.yaml"
+            target_config = target / "config.yaml"
+            base_config = target_config.read_text(encoding="utf-8")
+            source_config.write_text(
+                base_config + "\nworker:\n  interval_seconds: 5\n",
+                encoding="utf-8",
+            )
+            harness.run_push(source, merge_remote)
+            target_config.write_text(
+                base_config + "\nui:\n  density: compact\n",
+                encoding="utf-8",
+            )
+
+            pull = harness.run_pull(target, merge_remote)
+            require(pull["status"] == "ok", "YAML config merge pull failed")
+            merged_text = target_config.read_text(encoding="utf-8")
+            require("worker:" in merged_text and "interval_seconds: 5" in merged_text, "YAML merge lost remote worker config")
+            require("ui:" in merged_text and "density: compact" in merged_text, "YAML merge lost local UI config")
+            require("remote_path:" in merged_text, "YAML merge lost sync remote path")
+            require(not harness.list_conflicts(target), "YAML config merge created a conflict")
+            push = harness.run_push(target, merge_remote)
+            require(push["actions"]["uploaded"] == 1, "YAML merged config was not pushed")
+            metadata = remote_object_by_path(merge_remote, "config.yaml")
+            remote_text = harness.read_remote_object_content(
+                merge_remote, metadata["scope"], metadata["object_id"]
+            ).decode("utf-8")
+            require("worker:" in remote_text and "ui:" in remote_text, "remote did not receive YAML merged config")
+            require("watcher-state.json" not in remote_payload(merge_remote), "YAML merge leaked watcher state")
+            return "non-overlapping YAML config edits merge without syncing runtime state"
+
+        def text_three_way_merge() -> str:
+            merge_remote = harness.make_remote("text-three-way-merge")
+            source = harness.make_profile("text-merge-source", merge_remote)
+            target = harness.make_profile("text-merge-target", merge_remote)
+            artifact = source / "artifacts" / "merge.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text(
+                "title\n"
+                "local line: base\n"
+                "remote line: base\n"
+                "footer\n",
+                encoding="utf-8",
+            )
+            harness.run_push(source, merge_remote)
+            harness.run_pull(target, merge_remote)
+
+            artifact.write_text(
+                "title\n"
+                "local line: base\n"
+                "remote line: changed remotely\n"
+                "footer\n",
+                encoding="utf-8",
+            )
+            harness.run_push(source, merge_remote)
+            target_artifact = target / "artifacts" / "merge.txt"
+            target_artifact.write_text(
+                "title\n"
+                "local line: changed locally\n"
+                "remote line: base\n"
+                "footer\n",
+                encoding="utf-8",
+            )
+
+            pull = harness.run_pull(target, merge_remote)
+            require(pull["status"] == "ok", "text merge pull failed")
+            merged_text = target_artifact.read_text(encoding="utf-8")
+            require("local line: changed locally" in merged_text, "text merge lost local line")
+            require("remote line: changed remotely" in merged_text, "text merge lost remote line")
+            require(not harness.list_conflicts(target), "text three-way merge created a conflict")
+            push = harness.run_push(target, merge_remote)
+            require(push["actions"]["uploaded"] == 1, "text merged artifact was not pushed")
+            metadata = remote_object_by_path(merge_remote, "artifacts/merge.txt")
+            remote_text = harness.read_remote_object_content(
+                merge_remote, metadata["scope"], metadata["object_id"]
+            ).decode("utf-8")
+            require(remote_text == merged_text, "remote did not receive text merged content")
+            return "non-overlapping text edits merge and push as a new head"
+
+        def restore_previous_version() -> str:
+            restore_remote = harness.make_remote("restore-version")
+            profile = harness.make_profile("restore-source", restore_remote)
+            artifact = profile / "artifacts" / "restore.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("Version one.\n", encoding="utf-8")
+            harness.run_push(profile, restore_remote)
+            metadata = remote_object_by_path(restore_remote, "artifacts/restore.txt")
+            first_rev = metadata["remote_rev"]
+
+            artifact.write_text("Version two.\n", encoding="utf-8")
+            harness.run_push(profile, restore_remote)
+            second_metadata = remote_object_by_path(restore_remote, "artifacts/restore.txt")
+            require(second_metadata["remote_rev"] != first_rev, "second version did not create a new revision")
+            revisions = harness.list_revisions(profile, metadata["object_id"])
+            revision_ids = {row["revision_id"] for row in revisions}
+            require(first_rev in revision_ids and second_metadata["remote_rev"] in revision_ids, "version history missed a revision")
+
+            restore = harness.run_tool_restore_version(
+                profile,
+                object_id=metadata["object_id"],
+                version_id=first_rev,
+                scope="artifacts",
+            )
+            require(restore["status"] == "ok", "restore_version did not complete")
+            require(artifact.read_text(encoding="utf-8") == "Version one.\n", "restore did not write the previous content")
+            push = harness.run_push(profile, restore_remote)
+            require(push["actions"]["uploaded"] == 1, "restored version was not pushed as the new head")
+            restored_content = harness.read_remote_object_content(
+                restore_remote, metadata["scope"], metadata["object_id"]
+            ).decode("utf-8")
+            require(restored_content == "Version one.\n", "remote did not receive restored content")
+            return "previous artifact versions restore from local sync history and push cleanly"
+
+        def continuous_sync() -> str:
+            continuous_remote = harness.make_remote("continuous-sync")
+            profile = harness.make_profile("continuous-source", continuous_remote)
+            artifact = profile / "artifacts" / "continuous.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("Continuous fixture.\n", encoding="utf-8")
+            result = harness.run_continuous(
+                profile,
+                continuous_remote,
+                interval_seconds=0.01,
+                max_cycles=1,
+                run_immediately=False,
+            )
+            require(result["status"] == "ok", "continuous worker failed")
+            require(result["actions"]["uploaded"] >= 1, "continuous worker did not upload the changed artifact")
+            remote_paths = {obj["logical_path"] for obj in harness.list_remote_objects(continuous_remote)}
+            require("artifacts/continuous.txt" in remote_paths, "continuous artifact was not uploaded")
+            require("sync/watcher-state.json" not in remote_payload(continuous_remote), "watcher state leaked to remote")
+            return "continuous worker syncs an allowed change after one interval"
+
+        def pause_state_local_only() -> str:
+            pause_remote = harness.make_remote("pause-state")
+            profile = harness.make_profile("pause-source", pause_remote)
+            pause_output = harness.run_slash_sync(profile, "pause")
+            require("paused" in pause_output.lower(), "/sync pause did not report paused state")
+            artifact = profile / "artifacts" / "paused.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("Paused fixture.\n", encoding="utf-8")
+            result = harness.run_continuous(
+                profile,
+                pause_remote,
+                interval_seconds=0.0,
+                max_cycles=1,
+            )
+            require(result["status"] == "ok", "paused continuous worker failed")
+            require(result["paused_cycles"] == 1, "paused worker did not skip the cycle")
+            require(not harness.list_remote_objects(pause_remote), "paused worker uploaded data")
+            state = harness.scheduler_state(profile)
+            require(state["paused"] is True, "pause state was not stored locally")
+            require((profile / "sync" / "watcher-state.json").exists(), "watcher state file was not written")
+            require("watcher-state.json" not in remote_payload(pause_remote), "pause state leaked to remote")
+            return "pause state remains local and prevents continuous uploads"
+
+        def hook_wake_debounce() -> str:
+            hook_remote = harness.make_remote("hook-wake-debounce")
+            profile = harness.make_profile("hook-source", hook_remote)
+            session_id = harness.seed_session_fixture(profile)
+            artifact = profile / "artifacts" / "hook.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("Hook wake fixture.\n", encoding="utf-8")
+
+            harness.invoke_hook(profile, "on_session_end", session_id=session_id)
+            for _ in range(2):
+                harness.invoke_hook(
+                    profile,
+                    "post_tool_call",
+                    tool_name="write_file",
+                    args={"path": str(artifact)},
+                    result='{"status":"ok"}',
+                    session_id=session_id,
+                    task_id="hook-task",
+                )
+
+            pending = harness.scheduler_state(profile)
+            require(pending["pending_wake_count"] >= 3, "hook events did not record pending wakeups")
+            require(session_id in pending["pending_sessions"], "session hook did not record a pending session")
+            require("artifacts/hook.txt" in pending["pending_artifacts"], "tool hook did not record the artifact path")
+
+            result = harness.run_continuous(
+                profile,
+                hook_remote,
+                interval_seconds=0.0,
+                max_cycles=1,
+                debounce_seconds=0.01,
+                poll_mtime=False,
+                sync_on_idle=False,
+            )
+            require(result["status"] == "ok", "debounced worker failed")
+            require(result["sync_cycles"] == 1, "debounced wake burst did not produce exactly one sync cycle")
+            require(result["debounced_cycles"] == 1, "worker did not debounce the pending wake burst")
+            remote_paths = {obj["logical_path"] for obj in harness.list_remote_objects(hook_remote)}
+            require("artifacts/hook.txt" in remote_paths, "hook artifact was not uploaded")
+            require(any(path.startswith("sessions/snapshots/") for path in remote_paths), "session snapshot was not uploaded")
+            drained = harness.scheduler_state(profile)
+            require(drained["pending_wake_count"] == 0, "pending wake count was not drained")
+            require("watcher-state.json" not in remote_payload(hook_remote), "watcher state leaked to remote")
+            return "session and tool hooks wake the worker and debounce into one sync cycle"
+
+        def mtime_polling_reconcile() -> str:
+            poll_remote = harness.make_remote("mtime-polling")
+            profile = harness.make_profile("mtime-source", poll_remote)
+            initial = harness.run_continuous(
+                profile,
+                poll_remote,
+                interval_seconds=0.0,
+                max_cycles=1,
+                debounce_seconds=0.0,
+                poll_mtime=True,
+                sync_on_idle=False,
+            )
+            require(initial["status"] == "ok", "initial mtime baseline sync failed")
+            require(harness.scheduler_state(profile)["mtime_poll_initialized"], "mtime baseline was not initialized")
+
+            time.sleep(0.01)
+            artifact = profile / "artifacts" / "external-edit.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("External edit fixture.\n", encoding="utf-8")
+            for dirname, filename in (
+                ("logs", "agent.log"),
+                ("cache", "cache.bin"),
+                ("tmp", "scratch.tmp"),
+                ("locks", "sync.lock"),
+                ("sync", "watcher-state.json"),
+            ):
+                folder = profile / dirname
+                folder.mkdir(exist_ok=True)
+                (folder / filename).write_text("runtime only\n", encoding="utf-8")
+
+            result = harness.run_continuous(
+                profile,
+                poll_remote,
+                interval_seconds=0.0,
+                max_cycles=1,
+                debounce_seconds=0.0,
+                poll_mtime=True,
+                sync_on_idle=False,
+            )
+            require(result["status"] == "ok", "mtime polling worker failed")
+            require(result["poll_changes"] >= 1, "mtime polling did not detect the external edit")
+            require(result["sync_cycles"] == 1, "mtime polling did not run one reconcile cycle")
+            remote_paths = {obj["logical_path"] for obj in harness.list_remote_objects(poll_remote)}
+            require("artifacts/external-edit.txt" in remote_paths, "polled artifact was not uploaded")
+            payload = remote_payload(poll_remote)
+            for marker in ("agent.log", "cache.bin", "scratch.tmp", "sync.lock", "watcher-state.json"):
+                require(marker not in payload, f"runtime marker leaked through mtime polling: {marker}")
+            return "allowlisted mtime polling reconciles external edits without runtime state"
+
+        def sync_lock_single_flight() -> str:
+            lock_remote = harness.make_remote("single-flight")
+            profile = harness.make_profile("single-flight-source", lock_remote)
+            artifact = profile / "artifacts" / "single-flight.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("Single flight fixture.\n", encoding="utf-8")
+            harness.note_tool_changed(
+                profile,
+                tool_name="write_file",
+                artifact_paths=["artifacts/single-flight.txt"],
+            )
+
+            import hermes_sync.scheduler as scheduler_mod
+
+            original_run_once = scheduler_mod.run_once
+            first_started = threading.Event()
+            release_first = threading.Event()
+            results: list[dict] = []
+            failures: list[str] = []
+
+            def slow_run_once(profile_arg, remote_arg):
+                first_started.set()
+                release_first.wait(1.0)
+                return original_run_once(profile_arg, remote_arg)
+
+            def worker() -> None:
+                try:
+                    results.append(
+                        harness.run_continuous(
+                            profile,
+                            lock_remote,
+                            interval_seconds=0.0,
+                            max_cycles=1,
+                            debounce_seconds=0.0,
+                            poll_mtime=False,
+                            sync_on_idle=False,
+                        )
+                    )
+                except Exception as exc:
+                    failures.append(str(exc))
+
+            scheduler_mod.run_once = slow_run_once
+            try:
+                first = threading.Thread(target=worker)
+                first.start()
+                require(first_started.wait(1.0), "first worker did not enter sync")
+                second = threading.Thread(target=worker)
+                second.start()
+                time.sleep(0.02)
+                release_first.set()
+                first.join(1.0)
+                second.join(1.0)
+            finally:
+                release_first.set()
+                scheduler_mod.run_once = original_run_once
+
+            require(not failures, f"single-flight worker failed: {failures}")
+            require(len(results) == 2, "single-flight did not collect both worker results")
+            require(sum(result["sync_cycles"] for result in results) == 1, "workers ran overlapping sync cycles")
+            require(sum(result["locked_cycles"] for result in results) >= 1, "second worker did not observe the local sync lock")
+            require(not (profile / "sync" / "sync.lock").exists(), "local sync lock was left behind")
+            remote_paths = {obj["logical_path"] for obj in harness.list_remote_objects(lock_remote)}
+            require("artifacts/single-flight.txt" in remote_paths, "single-flight artifact was not uploaded")
+            require("sync.lock" not in remote_payload(lock_remote), "sync lock leaked to remote")
+            return "local sync lock prevents overlapping continuous sync cycles"
+
+        def pause_resume_drains_pending() -> str:
+            resume_remote = harness.make_remote("pause-resume")
+            profile = harness.make_profile("pause-resume-source", resume_remote)
+            pause_output = harness.run_slash_sync(profile, "pause")
+            require("paused" in pause_output.lower(), "pause command did not pause the worker")
+            artifact = profile / "artifacts" / "pending.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("Pending while paused.\n", encoding="utf-8")
+            harness.invoke_hook(
+                profile,
+                "post_tool_call",
+                tool_name="write_file",
+                args={"path": "artifacts/pending.txt"},
+                result='{"status":"ok"}',
+                session_id="paused-session",
+            )
+
+            paused = harness.run_continuous(
+                profile,
+                resume_remote,
+                interval_seconds=0.0,
+                max_cycles=1,
+                debounce_seconds=0.0,
+                poll_mtime=False,
+                sync_on_idle=False,
+            )
+            require(paused["paused_cycles"] == 1, "paused worker did not skip pending work")
+            require(not harness.list_remote_objects(resume_remote), "paused worker uploaded pending data")
+            pending = harness.scheduler_state(profile)
+            require(pending["pending_wake_count"] >= 1, "pending wake was not retained while paused")
+
+            resume_output = harness.run_slash_sync(profile, "resume")
+            require("resumed" in resume_output.lower(), "resume command did not resume the worker")
+            resumed = harness.run_continuous(
+                profile,
+                resume_remote,
+                interval_seconds=0.0,
+                max_cycles=1,
+                debounce_seconds=0.0,
+                poll_mtime=False,
+                sync_on_idle=False,
+            )
+            require(resumed["sync_cycles"] == 1, "resume did not drain pending work with one sync")
+            remote_paths = {obj["logical_path"] for obj in harness.list_remote_objects(resume_remote)}
+            require("artifacts/pending.txt" in remote_paths, "pending artifact was not uploaded after resume")
+            drained = harness.scheduler_state(profile)
+            require(drained["pending_wake_count"] == 0, "pending wake was not cleared after resume drain")
+            require("watcher-state.json" not in remote_payload(resume_remote), "pause state leaked to remote")
+            return "paused wake events stay local and resume drains them with one sync"
+
         scenarios: list[tuple[str, Callable[[], str]]] = [
             ("plugin_manifest_loads", plugin_manifest_loads),
             ("slash_status_readonly", slash_status_readonly),
@@ -437,11 +1061,27 @@ def run() -> dict:
             ("runtime_file_exclusion", runtime_file_exclusion),
             ("session_snapshot", session_snapshot),
             ("local_remote_object_round_trip", local_remote_object_round_trip),
+            ("backend_conformance", backend_conformance),
+            ("oss_backend_conformance", oss_backend_conformance),
+            ("oss_sync_config_round_trip", oss_sync_config_round_trip),
             ("outbox_processing", outbox_processing),
             ("inbox_staging_before_import", inbox_staging_before_import),
             ("push_idempotent", push_idempotent),
             ("pull_idempotent", pull_idempotent),
             ("once_idempotent", once_idempotent),
+            ("tombstone_delete_propagation", tombstone_delete_propagation),
+            ("text_conflict", text_conflict),
+            ("binary_conflict", binary_conflict),
+            ("json_structured_merge", json_structured_merge),
+            ("yaml_config_merge", yaml_config_merge),
+            ("text_three_way_merge", text_three_way_merge),
+            ("restore_previous_version", restore_previous_version),
+            ("continuous_sync", continuous_sync),
+            ("pause_state_local_only", pause_state_local_only),
+            ("hook_wake_debounce", hook_wake_debounce),
+            ("mtime_polling_reconcile", mtime_polling_reconcile),
+            ("sync_lock_single_flight", sync_lock_single_flight),
+            ("pause_resume_drains_pending", pause_resume_drains_pending),
         ]
         for scenario_id, fn in scenarios:
             results.append(_result(scenario_id, fn))
@@ -450,7 +1090,7 @@ def run() -> dict:
         status = "completed" if all(r.status == "complete" for r in results) else "failed"
         return {
             "status": status,
-            "harness": "phase2",
+            "harness": "phase5",
             "scenario_count": len(results),
             "trace": str(trace_path),
             "results": [r.as_dict() for r in results],

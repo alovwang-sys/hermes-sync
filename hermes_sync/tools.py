@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 from .manifest import list_conflicts
 from .status import get_status
-from .sync_engine import SyncConfigurationError, run_once
+from .sync_engine import SyncConfigurationError, restore_version, run_once
 
 SYNC_STATUS_SCHEMA: Dict[str, Any] = {
     "name": "sync_status",
@@ -41,10 +41,11 @@ SYNC_LIST_CONFLICTS_SCHEMA: Dict[str, Any] = {
 
 SYNC_RESTORE_VERSION_SCHEMA: Dict[str, Any] = {
     "name": "sync_restore_version",
-    "description": "Restore an object version. Phase 1 registers the schema but does not restore data.",
+    "description": "Restore an object version from local sync history.",
     "parameters": {
         "type": "object",
         "properties": {
+            "scope": {"type": "string"},
             "object_id": {"type": "string"},
             "version_id": {"type": "string"},
         },
@@ -80,10 +81,11 @@ def sync_list_conflicts_tool(args: Dict[str, Any] | None = None, **_: Any) -> st
 
 
 def sync_restore_version_tool(args: Dict[str, Any] | None = None, **_: Any) -> str:
+    payload = args or {}
     return _json(
-        {
-            "status": "not_implemented",
-            "message": "sync_restore_version is registered but version history is not implemented in phase 1.",
-            "actions": {"uploaded": 0, "downloaded": 0, "imported": 0, "deleted": 0},
-        }
+        restore_version(
+            object_id=str(payload.get("object_id") or ""),
+            version_id=str(payload.get("version_id") or ""),
+            scope=str(payload["scope"]) if payload.get("scope") else None,
+        )
     )

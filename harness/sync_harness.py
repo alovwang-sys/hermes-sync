@@ -207,10 +207,13 @@ class SyncHarness:
                 os.environ["HERMES_HOME"] = old
 
     def run_slash_status(self, profile: Path) -> str:
+        return self.run_slash_sync(profile, "status")
+
+    def run_slash_sync(self, profile: Path, args: str) -> str:
         manager = self.load_plugin_manager(profile)
         handler = manager._plugin_commands["sync"]["handler"]
         with self.hermes_env(profile):
-            return handler("status")
+            return handler(args)
 
     def run_tool_status(self, profile: Path) -> Dict[str, Any]:
         self.load_plugin_manager(profile)
@@ -218,6 +221,30 @@ class SyncHarness:
             from tools.registry import registry
 
             return json.loads(registry.dispatch("sync_status", {}))
+
+    def run_tool_conflicts(self, profile: Path) -> Dict[str, Any]:
+        self.load_plugin_manager(profile)
+        with self.hermes_env(profile):
+            from tools.registry import registry
+
+            return json.loads(registry.dispatch("sync_list_conflicts", {}))
+
+    def run_tool_restore_version(
+        self,
+        profile: Path,
+        *,
+        object_id: str,
+        version_id: str,
+        scope: str | None = None,
+    ) -> Dict[str, Any]:
+        self.load_plugin_manager(profile)
+        payload: Dict[str, Any] = {"object_id": object_id, "version_id": version_id}
+        if scope is not None:
+            payload["scope"] = scope
+        with self.hermes_env(profile):
+            from tools.registry import registry
+
+            return json.loads(registry.dispatch("sync_restore_version", payload))
 
     def direct_status(self, profile: Path) -> Dict[str, Any]:
         self._ensure_python_paths()
@@ -331,6 +358,115 @@ class SyncHarness:
 
         return [metadata.as_dict() for metadata in LocalFolderBackend(remote).list_tombstones()]
 
+    def list_conflicts(self, profile: Path) -> list[Dict[str, Any]]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(profile)
+        with self.hermes_env(profile):
+            from hermes_sync.manifest import list_conflicts
+
+            return list_conflicts(profile)
+
+    def list_revisions(self, profile: Path, object_id: str | None = None) -> list[Dict[str, Any]]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(profile)
+        with self.hermes_env(profile):
+            from hermes_sync.manifest import list_revisions
+
+            return list_revisions(profile, object_id=object_id)
+
+    def run_restore_version(
+        self,
+        profile: Path,
+        *,
+        object_id: str,
+        version_id: str,
+        scope: str | None = None,
+    ) -> Dict[str, Any]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(profile)
+        with self.hermes_env(profile):
+            from hermes_sync.sync_engine import restore_version
+
+            return restore_version(
+                profile,
+                object_id=object_id,
+                version_id=version_id,
+                scope=scope,
+            )
+
+    def run_continuous(
+        self,
+        profile: Path,
+        remote: Path | None = None,
+        *,
+        interval_seconds: float = 0.01,
+        max_cycles: int = 1,
+        run_immediately: bool = True,
+        debounce_seconds: float = 0.05,
+        poll_mtime: bool = True,
+        sync_on_idle: bool = True,
+    ) -> Dict[str, Any]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(profile)
+        if remote is not None:
+            self._assert_inside_harness(remote)
+        with self.hermes_env(profile):
+            from hermes_sync.scheduler import run_continuous
+
+            return run_continuous(
+                profile,
+                remote,
+                interval_seconds=interval_seconds,
+                max_cycles=max_cycles,
+                run_immediately=run_immediately,
+                debounce_seconds=debounce_seconds,
+                poll_mtime=poll_mtime,
+                sync_on_idle=sync_on_idle,
+            )
+
+    def set_paused(self, profile: Path, paused: bool) -> Dict[str, Any]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(profile)
+        with self.hermes_env(profile):
+            from hermes_sync.scheduler import set_paused
+
+            return set_paused(profile, paused=paused, reason="harness")
+
+    def invoke_hook(self, profile: Path, name: str, **kwargs: Any) -> list[Any]:
+        manager = self.load_plugin_manager(profile)
+        with self.hermes_env(profile):
+            return manager.invoke_hook(name, **kwargs)
+
+    def note_tool_changed(
+        self,
+        profile: Path,
+        *,
+        tool_name: str,
+        args: Dict[str, Any] | None = None,
+        artifact_paths: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> Dict[str, Any]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(profile)
+        with self.hermes_env(profile):
+            from hermes_sync.scheduler import note_tool_changed
+
+            return note_tool_changed(
+                profile,
+                tool_name=tool_name,
+                args=args,
+                artifact_paths=artifact_paths,
+                session_id=session_id,
+            )
+
+    def scheduler_state(self, profile: Path) -> Dict[str, Any]:
+        self._ensure_python_paths()
+        self._assert_inside_harness(profile)
+        with self.hermes_env(profile):
+            from hermes_sync.scheduler import scheduler_state
+
+            return scheduler_state(profile)
+
     def sync_stage_paths(self, profile: Path, stage: str) -> list[str]:
         root = profile / "sync" / stage
         if not root.exists():
@@ -359,7 +495,7 @@ class SyncHarness:
             "scenario_count": len(results),
             "scenarios": [r.as_dict() for r in results],
         }
-        path = self.traces_root / "phase2-trace.json"
+        path = self.traces_root / "phase5-trace.json"
         path.write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return path
 

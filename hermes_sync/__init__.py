@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .cli import handle_sync_command
+from .scheduler import note_session_changed, note_tool_changed
 from .tools import (
     SYNC_LIST_CONFLICTS_SCHEMA,
     SYNC_NOW_SCHEMA,
@@ -15,7 +16,31 @@ from .tools import (
 )
 
 
+def _on_session_end(session_id: str = "", **_: object) -> None:
+    note_session_changed(session_id=session_id or None)
+
+
+def _on_post_tool_call(
+    tool_name: str = "",
+    args: dict | None = None,
+    session_id: str = "",
+    **_: object,
+) -> None:
+    note_tool_changed(
+        tool_name=tool_name,
+        args=args if isinstance(args, dict) else {},
+        session_id=session_id or None,
+    )
+
+
+def _on_post_llm_call(**_: object) -> None:
+    return None
+
+
 def register(ctx) -> None:
+    ctx.register_hook("on_session_end", _on_session_end)
+    ctx.register_hook("post_tool_call", _on_post_tool_call)
+    ctx.register_hook("post_llm_call", _on_post_llm_call)
     ctx.register_command(
         "sync",
         handler=handle_sync_command,
