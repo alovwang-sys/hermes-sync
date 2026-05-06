@@ -235,7 +235,7 @@ class OssBackend:
                 if exc.code == 404:
                     raise FileNotFoundError(key) from exc
                 if exc.code not in {429, 500, 502, 503, 504} or attempt == self.max_attempts:
-                    raise
+                    raise RuntimeError(self._format_http_error(exc)) from exc
                 last_error = exc
             except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
                 if attempt == self.max_attempts:
@@ -244,6 +244,32 @@ class OssBackend:
             time.sleep(min(0.5 * (2 ** (attempt - 1)), 4.0))
         assert last_error is not None
         raise last_error
+
+    @staticmethod
+    def _format_http_error(exc: urllib.error.HTTPError) -> str:
+        try:
+            body = exc.read(4096)
+        except Exception:
+            body = b""
+        code = ""
+        message = ""
+        request_id = ""
+        if body:
+            try:
+                root = ET.fromstring(body)
+                code = next((item.text or "" for item in root.iter() if item.tag.endswith("Code")), "")
+                message = next((item.text or "" for item in root.iter() if item.tag.endswith("Message")), "")
+                request_id = next((item.text or "" for item in root.iter() if item.tag.endswith("RequestId")), "")
+            except ET.ParseError:
+                message = body.decode("utf-8", errors="replace").strip()[:300]
+        parts = [f"OSS HTTP {exc.code}"]
+        if code:
+            parts.append(code)
+        if message:
+            parts.append(message)
+        if request_id:
+            parts.append(f"RequestId={request_id}")
+        return ": ".join(parts)
 
     def _url_for_key(self, key: str, query: Dict[str, str]) -> str:
         parsed = urllib.parse.urlsplit(self.endpoint)
