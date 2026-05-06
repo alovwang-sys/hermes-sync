@@ -19,17 +19,9 @@ def route_sync_command(raw_args: str) -> Dict[str, Any]:
         try:
             return run_once()
         except SyncConfigurationError as exc:
-            return {
-                "status": "error",
-                "subcommand": subcommand,
-                "message": str(exc),
-                "actions": {
-                    "uploaded": 0,
-                    "downloaded": 0,
-                    "imported": 0,
-                    "deleted": 0,
-                },
-            }
+            return _error_response(subcommand, str(exc))
+        except Exception as exc:
+            return _error_response(subcommand, _exception_message(exc))
     if subcommand == "pause":
         return {
             "status": "ok",
@@ -71,6 +63,30 @@ def route_sync_command(raw_args: str) -> Dict[str, Any]:
         "message": f"Unknown /sync subcommand: {subcommand}",
         "supported": ["status", "now", "pause", "resume", "conflicts"],
     }
+
+
+def _error_response(subcommand: str, message: str) -> Dict[str, Any]:
+    return {
+        "status": "error",
+        "subcommand": subcommand,
+        "message": message or "Sync command failed with an empty error message.",
+        "actions": {
+            "uploaded": 0,
+            "downloaded": 0,
+            "imported": 0,
+            "deleted": 0,
+        },
+    }
+
+
+def _exception_message(exc: BaseException) -> str:
+    message = str(exc)
+    if message:
+        return f"{type(exc).__name__}: {message}"
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None and str(cause):
+        return f"{type(exc).__name__}: caused by {type(cause).__name__}: {cause}"
+    return f"{type(exc).__name__}: empty exception message"
 
 
 def format_status(data: Dict[str, Any]) -> str:

@@ -239,11 +239,41 @@ class OssBackend:
                 last_error = exc
             except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
                 if attempt == self.max_attempts:
-                    raise
+                    raise RuntimeError(
+                        self._format_request_error(
+                            exc,
+                            method=method,
+                            key=key,
+                            attempt=attempt,
+                        )
+                    ) from exc
                 last_error = exc
             time.sleep(min(0.5 * (2 ** (attempt - 1)), 4.0))
         assert last_error is not None
         raise last_error
+
+    def _format_request_error(
+        self,
+        exc: BaseException,
+        *,
+        method: str,
+        key: str,
+        attempt: int,
+    ) -> str:
+        reason = ""
+        if isinstance(exc, urllib.error.URLError):
+            reason = str(exc.reason)
+        if not reason:
+            reason = str(exc)
+        if not reason:
+            reason = type(exc).__name__
+        parsed = urllib.parse.urlsplit(self.endpoint)
+        host = parsed.netloc or self.endpoint
+        return (
+            f"OSS request failed after {attempt} attempt(s): "
+            f"{type(exc).__name__}: {reason}; method={method}; "
+            f"bucket={self.bucket}; endpoint={host}; key={key or '<bucket-root>'}"
+        )
 
     @staticmethod
     def _format_http_error(exc: urllib.error.HTTPError) -> str:
