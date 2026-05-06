@@ -762,6 +762,25 @@ def run() -> dict:
             require(result["staging"]["inbox"] == 0, "second pull restaged clean objects")
             return "second pull created no additional local changes"
 
+        def partial_remote_object_skipped() -> str:
+            partial_remote = harness.make_remote("partial-remote-object")
+            source = harness.make_profile("partial-source", partial_remote)
+            target = harness.make_profile("partial-target", partial_remote)
+            artifact = source / "artifacts" / "partial.txt"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("Partial remote fixture.\n", encoding="utf-8")
+            push = harness.run_push(source, partial_remote)
+            require(push["status"] == "ok", "partial fixture push did not complete")
+            metadata = remote_object_by_path(partial_remote, "artifacts/partial.txt")
+            content_path = partial_remote / "objects" / metadata["scope"] / metadata["object_id"] / "content"
+            content_path.unlink()
+
+            pull = harness.run_pull(target, partial_remote)
+            require(pull["status"] == "ok", "pull failed on partial remote object")
+            require(pull["staging"]["skipped"] >= 1, "partial remote object was not counted as skipped")
+            require(not (target / "artifacts" / "partial.txt").exists(), "partial object imported without content")
+            return "remote metadata without content is skipped instead of aborting pull"
+
         def once_idempotent() -> str:
             once_artifact = device_a / "artifacts" / "once.txt"
             once_artifact.write_text("Once idempotency fixture.\n", encoding="utf-8")
@@ -1332,6 +1351,7 @@ def run() -> dict:
             ("inbox_staging_before_import", inbox_staging_before_import),
             ("push_idempotent", push_idempotent),
             ("pull_idempotent", pull_idempotent),
+            ("partial_remote_object_skipped", partial_remote_object_skipped),
             ("once_idempotent", once_idempotent),
             ("tombstone_delete_propagation", tombstone_delete_propagation),
             ("text_conflict", text_conflict),

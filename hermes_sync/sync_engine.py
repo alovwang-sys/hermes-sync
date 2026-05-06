@@ -221,7 +221,11 @@ def run_pull(profile: Path | None = None, remote_path: Path | str | None = None)
             continue
         if _has_remote_rev(profile_root, metadata):
             continue
-        downloaded = backend.download_object(metadata.scope, metadata.object_id)
+        try:
+            downloaded = backend.download_object(metadata.scope, metadata.object_id)
+        except FileNotFoundError:
+            staging["skipped"] += 1
+            continue
         if _stage_inbox(profile_root, downloaded.metadata, downloaded.content):
             staging["inbox"] += 1
         staged.append((downloaded.metadata, downloaded.content))
