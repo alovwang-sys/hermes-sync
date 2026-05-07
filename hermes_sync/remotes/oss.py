@@ -66,8 +66,8 @@ class OssBackend:
         self.credentials = credentials if credentials is not None else self._env_credentials()
         if not self.unsigned and self.credentials is None:
             raise ValueError(
-                "OSS credentials are required; set ALIBABA_CLOUD_ACCESS_KEY_ID "
-                "and ALIBABA_CLOUD_ACCESS_KEY_SECRET"
+                "OSS credentials are required; set OSS_ACCESS_KEY_ID/OSS_ACCESS_KEY_SECRET "
+                "or ALIBABA_CLOUD_ACCESS_KEY_ID/ALIBABA_CLOUD_ACCESS_KEY_SECRET"
             )
 
     def list_objects(self) -> list[RemoteObjectMetadata]:
