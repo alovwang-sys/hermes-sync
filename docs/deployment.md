@@ -12,10 +12,21 @@ From this repository:
 python3 scripts/install_dev_plugin.py --profile ~/.hermes
 ```
 
+For the shortest local smoke-test path, install, enable the plugin, and add a
+safe local-folder remote in one command:
+
+```bash
+python3 scripts/install_dev_plugin.py --profile ~/.hermes --enable-local
+```
+
+That command backs up an existing `config.yaml` before writing changes. If the
+profile already has a top-level `sync:` block, the installer leaves that block
+unchanged unless you explicitly pass `--replace-sync-config`.
+
 Dry run first if you want to check paths:
 
 ```bash
-python3 scripts/install_dev_plugin.py --profile ~/.hermes --dry-run
+python3 scripts/install_dev_plugin.py --profile ~/.hermes --enable-local --dry-run
 ```
 
 The installer writes:
@@ -25,7 +36,8 @@ The installer writes:
 ~/.hermes/plugins/hermes-sync/__init__.py
 ```
 
-It does not edit `config.yaml` and does not store credentials.
+Without `--enable-local`, it does not edit `config.yaml`. It never stores
+credentials.
 
 ## Minimal Local Remote Config
 
@@ -64,6 +76,18 @@ Then use in Hermes:
 
 Top-level `hermes sync ...` remains blocked until Hermes core exposes a generic
 plugin CLI bridge.
+
+## Runtime Loading
+
+Hermes supports directory plugins through `plugin.yaml` plus `__init__.py`, but
+this plugin does not currently provide true hot-plug behavior on its own. A
+running Hermes process must either restart or trigger Hermes core plugin
+rediscovery before newly installed files and updated `plugins.enabled` entries
+register `/sync` and the `sync_*` tools.
+
+For development, the installed shim points back to this repository checkout.
+Code changes still depend on Hermes/Python module reload behavior, so restarting
+Hermes is the reliable path after changing plugin code.
 
 For a real profile, keep `sessions: false` for the first smoke test. Session
 snapshots can include user message text, so enable that scope only after the

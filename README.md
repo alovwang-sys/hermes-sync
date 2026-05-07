@@ -185,8 +185,17 @@ For a quick development install into a Hermes profile:
 python3 scripts/install_dev_plugin.py --profile ~/.hermes
 ```
 
-Then enable `hermes-sync` and start with a local-folder remote in
-`~/.hermes/config.yaml`:
+For a one-command local smoke-test install, also enable the plugin and write a
+safe local-folder remote config:
+
+```bash
+python3 scripts/install_dev_plugin.py --profile ~/.hermes --enable-local
+```
+
+That command backs up `~/.hermes/config.yaml` before writing changes and leaves
+an existing top-level `sync:` block alone unless `--replace-sync-config` is
+passed. If you install without `--enable-local`, enable `hermes-sync` and start
+with a local-folder remote in `~/.hermes/config.yaml`:
 
 ```yaml
 plugins:
@@ -212,6 +221,11 @@ Keep `sessions: false` for the first real-profile smoke run; session snapshots
 are available but intentionally opt-in because they can contain user message
 text. With `plugins: true`, only plugin manifests sync; plugin executable code
 and runtime caches stay local.
+
+Hermes must restart or trigger plugin rediscovery after a new install/config
+change before `/sync` and the `sync_*` tools are registered. The plugin does not
+currently guarantee true hot-plug loading inside an already-running Hermes
+process.
 
 ## WebDAV Remote Configuration
 
