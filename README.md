@@ -177,25 +177,92 @@ export HERMES_SYNC_OSS_REGION=cn-hangzhou
 python3 -m harness.oss_live_acceptance
 ```
 
-## Test Deployment
+## Installation and Usage
 
-For a quick development install into a Hermes profile:
+`hermes-sync` is currently installed as a development directory plugin. That
+means you need a local checkout of this repository, and the installed plugin
+shim points back to that checkout. Do not move or delete the checkout after
+installing unless you reinstall the plugin.
 
 ```bash
-python3 scripts/install_dev_plugin.py --profile ~/.hermes
+git clone https://github.com/alovwang-sys/hermes-sync.git
+cd hermes-sync
 ```
 
-For a one-command local smoke-test install, also enable the plugin and write a
-safe local-folder remote config:
+Run the harness before trying a new checkout against a real profile:
+
+```bash
+python3 -m harness.run
+```
+
+### Quick Local Smoke Test
+
+The shortest safe path installs the plugin, enables it, and writes a local
+folder remote configuration:
 
 ```bash
 python3 scripts/install_dev_plugin.py --profile ~/.hermes --enable-local
 ```
 
-That command backs up `~/.hermes/config.yaml` before writing changes and leaves
-an existing top-level `sync:` block alone unless `--replace-sync-config` is
-passed. If you install without `--enable-local`, enable `hermes-sync` and start
-with a local-folder remote in `~/.hermes/config.yaml`:
+The command writes:
+
+```text
+~/.hermes/plugins/hermes-sync/plugin.yaml
+~/.hermes/plugins/hermes-sync/__init__.py
+```
+
+It also updates `~/.hermes/config.yaml` with a safe local remote:
+
+```yaml
+plugins:
+  enabled:
+    - hermes-sync
+
+sync:
+  remote: local
+  remote_path: /tmp/hermes-sync-dev-remote
+  scopes:
+    config: true
+    sessions: false
+    artifacts: true
+    memory: false
+    skills: false
+    plugins: false
+    secrets: false
+```
+
+If `config.yaml` already exists, the installer creates a timestamped backup
+before writing. If the profile already has a top-level `sync:` block, the
+installer leaves it unchanged unless you explicitly pass
+`--replace-sync-config`:
+
+```bash
+python3 scripts/install_dev_plugin.py \
+  --profile ~/.hermes \
+  --enable-local \
+  --replace-sync-config
+```
+
+Use a different local remote folder when needed:
+
+```bash
+python3 scripts/install_dev_plugin.py \
+  --profile ~/.hermes \
+  --enable-local \
+  --remote-path /path/to/hermes-sync-remote
+```
+
+### Manual Install
+
+If you want the installer to write only the plugin files and leave
+`config.yaml` untouched:
+
+```bash
+python3 scripts/install_dev_plugin.py --profile ~/.hermes
+```
+
+Then add `hermes-sync` and a `sync:` block to `~/.hermes/config.yaml`
+manually:
 
 ```yaml
 plugins:
@@ -215,17 +282,105 @@ sync:
     secrets: false
 ```
 
-Use `/sync status` and `/sync now` inside Hermes. See
-`docs/deployment.md` for the full test deployment checklist and OSS notes.
-Keep `sessions: false` for the first real-profile smoke run; session snapshots
-are available but intentionally opt-in because they can contain user message
-text. With `plugins: true`, only plugin manifests sync; plugin executable code
-and runtime caches stay local.
+For a first real-profile smoke test, prefer the narrower quick-start scope
+settings: `config: true`, `artifacts: true`, and everything else false.
+
+### Runtime Loading
 
 Hermes must restart or trigger plugin rediscovery after a new install/config
 change before `/sync` and the `sync_*` tools are registered. The plugin does not
 currently guarantee true hot-plug loading inside an already-running Hermes
-process.
+process. Restarting Hermes is also the reliable path after changing plugin code
+because the development shim imports Python modules from this checkout.
+
+### Daily Commands
+
+Use the slash commands inside Hermes:
+
+```text
+/sync status
+/sync now
+/sync conflicts
+/sync pause
+/sync resume
+```
+
+The top-level `hermes sync ...` CLI remains future work until Hermes core
+exposes a generic plugin CLI-command bridge.
+
+Registered tools are available to Hermes as:
+
+- `sync_status`
+- `sync_now`
+- `sync_list_conflicts`
+- `sync_restore_version`
+
+### What Syncs
+
+Sync is scope-based, not whole-directory mirroring.
+
+| Scope | Default | Notes |
+| --- | --- | --- |
+| `config` | enabled | Syncs non-secret config files such as `config.yaml`. Secret-like keys are skipped. |
+| `artifacts` | enabled | Syncs allowlisted files under `artifacts/`, `outputs/`, and `reports/`. |
+| `sessions` | disabled | Exports read-only JSON snapshots from `state.db`; does not sync SQLite files. Session text may contain user content. |
+| `memory` | disabled | Syncs allowlisted files under `memories/`. |
+| `skills` | disabled | Syncs skill files while excluding skill runtime state. |
+| `plugins` | disabled | Syncs plugin manifests only; plugin executable code and caches stay local. |
+| `secrets` | disabled | Not supported by default. Do not enable for real profiles. |
+
+These paths are blocked even if broad scopes are enabled: `.env`, API keys,
+tokens, provider credentials, `state.db`, `state.db-wal`, `state.db-shm`, logs,
+caches, tmp files, lock files, and plugin-owned `sync/` metadata.
+
+### Two-Device Local Test
+
+Use the same `remote_path` on two isolated profiles to confirm push/pull before
+using cloud storage:
+
+```bash
+python3 scripts/install_dev_plugin.py \
+  --profile /tmp/hermes-device-a \
+  --enable-local \
+  --remote-path /tmp/hermes-sync-dev-remote
+
+python3 scripts/install_dev_plugin.py \
+  --profile /tmp/hermes-device-b \
+  --enable-local \
+  --remote-path /tmp/hermes-sync-dev-remote
+```
+
+Start Hermes with device A, create or edit an allowed artifact, then run:
+
+```text
+/sync now
+```
+
+Start Hermes with device B and run:
+
+```text
+/sync status
+/sync now
+```
+
+Confirm that only allowed config/artifact objects appear on device B. Runtime
+state, databases, credentials, logs, caches, and lock files should not appear.
+
+### Switching to a Cloud Remote
+
+After the local-folder remote works cleanly, change only the `sync:` remote
+routing values in `config.yaml`. Keep credentials in environment variables,
+not in synced profile config. Supported remote values are:
+
+- `local` or `local-folder`
+- `oss`, `alibaba-oss`, or `aliyun-oss`
+- `webdav` or `web-dav`
+- `s3` or `s3-compatible`
+- `r2` or `cloudflare-r2`
+
+For real cloud remotes, start with a dedicated test bucket/path prefix and keep
+`sessions: false` until the destination and data policy are reviewed. Session
+snapshots can include user message text.
 
 ## WebDAV Remote Configuration
 
