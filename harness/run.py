@@ -752,6 +752,11 @@ def run() -> dict:
             require(result["status"] == "ok", "second push did not complete")
             require(result["actions"]["uploaded"] == 0, "second push uploaded extra objects")
             require(result["staging"]["outbox"] == 0, "second push restaged clean objects")
+            metrics = result.get("metrics") or {}
+            require(metrics.get("dirty_objects") == 0, "second push did not report zero dirty objects")
+            require(metrics.get("uploaded_bytes") == 0, "second push reported uploaded bytes")
+            require(metrics.get("unchanged_objects", 0) >= 2, "second push did not report unchanged objects")
+            require(metrics.get("hash_reused_objects", 0) >= 1, "second push did not reuse manifest hashes")
             return "second push created no additional remote changes"
 
         def pull_idempotent() -> str:

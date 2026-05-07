@@ -114,6 +114,8 @@ class ScanResult:
     blocked_count: int
     blocked_reasons: Dict[str, int]
     scope_counts: Dict[str, int]
+    hashed_count: int = 0
+    hash_reused_count: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -122,6 +124,8 @@ class ScanResult:
             "blocked_count": self.blocked_count,
             "blocked_reasons": dict(sorted(self.blocked_reasons.items())),
             "scope_counts": dict(sorted(self.scope_counts.items())),
+            "hashed_count": self.hashed_count,
+            "hash_reused_count": self.hash_reused_count,
         }
 
 
@@ -312,6 +316,8 @@ def _scan_file(
     rel: Path,
     objects: list[ScanObject],
     blocked_reasons: Dict[str, int],
+    hash_cache: Dict[tuple[str, str], Dict[str, Any]] | None = None,
+    scan_stats: Dict[str, int] | None = None,
 ) -> None:
     try:
         path = validate_profile_relative_path(profile, rel)
@@ -327,11 +333,27 @@ def _scan_file(
             return
         stat = path.stat()
         logical_path = rel.as_posix()
-        content_hash = file_sha256(path)
+        object_id = _object_id(scope, logical_path)
+        cached_hash = _cached_content_hash(
+            hash_cache,
+            scope=scope,
+            object_id=object_id,
+            logical_path=logical_path,
+            size_bytes=stat.st_size,
+            mtime=stat.st_mtime,
+        )
+        if cached_hash is None:
+            content_hash = file_sha256(path)
+            if scan_stats is not None:
+                scan_stats["hashed_count"] = scan_stats.get("hashed_count", 0) + 1
+        else:
+            content_hash = cached_hash
+            if scan_stats is not None:
+                scan_stats["hash_reused_count"] = scan_stats.get("hash_reused_count", 0) + 1
         objects.append(
             ScanObject(
                 scope=scope,
-                object_id=_object_id(scope, logical_path),
+                object_id=object_id,
                 logical_path=logical_path,
                 content_hash=content_hash,
                 size_bytes=stat.st_size,
@@ -359,7 +381,38 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def scan_profile(profile: Path | None = None, scopes: Dict[str, bool] | None = None) -> ScanResult:
+def _cached_content_hash(
+    hash_cache: Dict[tuple[str, str], Dict[str, Any]] | None,
+    *,
+    scope: str,
+    object_id: str,
+    logical_path: str,
+    size_bytes: int,
+    mtime: float,
+) -> str | None:
+    if scope == "config" or not hash_cache:
+        return None
+    row = hash_cache.get((scope, object_id))
+    if not row:
+        return None
+    try:
+        if str(row.get("logical_path") or "") != logical_path:
+            return None
+        if int(row.get("size_bytes") or 0) != int(size_bytes):
+            return None
+        if abs(float(row.get("mtime") or 0.0) - float(mtime)) > 0.000001:
+            return None
+        content_hash = str(row.get("content_hash") or "")
+    except (TypeError, ValueError):
+        return None
+    return content_hash or None
+
+
+def scan_profile(
+    profile: Path | None = None,
+    scopes: Dict[str, bool] | None = None,
+    hash_cache: Dict[tuple[str, str], Dict[str, Any]] | None = None,
+) -> ScanResult:
     """Scan explicit sync scopes without mutating user data or remote state."""
 
     from .manifest import get_hermes_home
@@ -374,12 +427,21 @@ def scan_profile(profile: Path | None = None, scopes: Dict[str, bool] | None = N
 
     objects: list[ScanObject] = []
     blocked_reasons: Dict[str, int] = {}
+    scan_stats: Dict[str, int] = {"hashed_count": 0, "hash_reused_count": 0}
 
     if scope_flags.get("config", False):
         for name in CONFIG_FILES:
             rel = Path(name)
             if (profile_root / rel).exists():
-                _scan_file(profile_root, "config", rel, objects, blocked_reasons)
+                _scan_file(
+                    profile_root,
+                    "config",
+                    rel,
+                    objects,
+                    blocked_reasons,
+                    hash_cache,
+                    scan_stats,
+                )
 
     for scope, root_names in SCOPE_ROOTS.items():
         if not scope_flags.get(scope, False):
@@ -399,7 +461,15 @@ def scan_profile(profile: Path | None = None, scopes: Dict[str, bool] | None = N
                 except ValueError:
                     _record_block(blocked_reasons, "outside_profile")
                     continue
-                _scan_file(profile_root, scope, rel, objects, blocked_reasons)
+                _scan_file(
+                    profile_root,
+                    scope,
+                    rel,
+                    objects,
+                    blocked_reasons,
+                    hash_cache,
+                    scan_stats,
+                )
 
     scope_counts: Dict[str, int] = {}
     for obj in objects:
@@ -410,4 +480,6 @@ def scan_profile(profile: Path | None = None, scopes: Dict[str, bool] | None = N
         blocked_count=sum(blocked_reasons.values()),
         blocked_reasons=blocked_reasons,
         scope_counts=scope_counts,
+        hashed_count=scan_stats["hashed_count"],
+        hash_reused_count=scan_stats["hash_reused_count"],
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,18 +86,39 @@ def run_push(profile: Path | None = None, remote_path: Path | str | None = None)
     backend = _backend_for(profile_root, remote_path)
     device = ensure_device(profile_root)
     actions = _empty_actions()
+    metrics = _empty_metrics()
     staging = {"outbox": 0, "inbox": 0, "skipped": 0}
     phases: list[Dict[str, Any]] = []
 
-    scan_objects, session_contents = _scan_export_objects(profile_root)
-    phases.append({"name": "scan", "status": "completed", "objects": len(scan_objects)})
+    phase_started = time.perf_counter()
+    scan_objects, session_contents, scan_metrics = _scan_export_objects(profile_root)
+    metrics["candidate_objects"] = len(scan_objects)
+    metrics["candidate_bytes"] = sum(obj.size_bytes for obj in scan_objects)
+    metrics["hashed_objects"] = scan_metrics.get("hashed_objects", 0)
+    metrics["hash_reused_objects"] = scan_metrics.get("hash_reused_objects", 0)
+    phases.append(
+        {
+            "name": "scan",
+            "status": "completed",
+            "objects": len(scan_objects),
+            "bytes": metrics["candidate_bytes"],
+            "hashed_objects": metrics["hashed_objects"],
+            "hash_reused_objects": metrics["hash_reused_objects"],
+            "duration_ms": _elapsed_ms(phase_started),
+        }
+    )
+    phase_started = time.perf_counter()
     for obj in scan_objects:
-        content = session_contents.get(obj.object_id) if obj.scope == "sessions" else None
-        if content is None:
+        content: bytes | None = None
+        content_loaded = False
+        if obj.scope == "config":
             content = _read_export_content(profile_root, obj)
-        if content is None:
-            staging["skipped"] += 1
-            continue
+            content_loaded = True
+            if content is None:
+                staging["skipped"] += 1
+                metrics["skipped_objects"] += 1
+                metrics["skipped_bytes"] += obj.size_bytes
+                continue
         rev = revision_id(obj.scope, obj.object_id, obj.content_hash)
         needs_upload = upsert_local_object(
             profile_root,
@@ -108,10 +130,27 @@ def run_push(profile: Path | None = None, remote_path: Path | str | None = None)
             mtime=obj.mtime,
             size_bytes=obj.size_bytes,
         )
-        if needs_upload:
-            metadata = _metadata_from_scan(device["device_id"], obj, rev)
-            if _stage_outbox(profile_root, metadata, content):
-                staging["outbox"] += 1
+        if not needs_upload:
+            metrics["unchanged_objects"] += 1
+            metrics["unchanged_bytes"] += obj.size_bytes
+            continue
+        metrics["dirty_objects"] += 1
+        metrics["dirty_bytes"] += obj.size_bytes
+        if not content_loaded:
+            content = (
+                session_contents.get(obj.object_id)
+                if obj.scope == "sessions"
+                else _read_export_content(profile_root, obj)
+            )
+        if content is None:
+            staging["skipped"] += 1
+            metrics["skipped_objects"] += 1
+            metrics["skipped_bytes"] += obj.size_bytes
+            continue
+        metadata = _metadata_from_scan(device["device_id"], obj, rev)
+        if _stage_outbox(profile_root, metadata, content):
+            staging["outbox"] += 1
+            metrics["staged_bytes"] += len(content)
     local_deletes = _record_missing_deletes(profile_root, device["device_id"], scan_objects)
     for row in list_dirty_tombstones(profile_root):
         metadata = _metadata_from_tombstone(device["device_id"], row)
@@ -123,10 +162,16 @@ def run_push(profile: Path | None = None, remote_path: Path | str | None = None)
             "status": "completed",
             "objects": staging["outbox"],
             "tombstones": local_deletes,
+            "bytes": metrics["staged_bytes"],
+            "dirty_objects": metrics["dirty_objects"],
+            "unchanged_objects": metrics["unchanged_objects"],
+            "duration_ms": _elapsed_ms(phase_started),
         }
     )
 
+    phase_started = time.perf_counter()
     uploaded = 0
+    uploaded_bytes = 0
     for row in list_dirty_objects(profile_root):
         staged = _read_staged_outbox(profile_root, str(row["scope"]), str(row["object_id"]))
         if staged is None:
@@ -141,6 +186,8 @@ def run_push(profile: Path | None = None, remote_path: Path | str | None = None)
             content = _read_export_content(profile_root, obj)
             if content is None:
                 staging["skipped"] += 1
+                metrics["skipped_objects"] += 1
+                metrics["skipped_bytes"] += int(row["size_bytes"] or 0)
                 continue
             metadata = _metadata_from_scan(device["device_id"], obj, str(row["local_rev"]))
             _stage_outbox(profile_root, metadata, content)
@@ -160,6 +207,7 @@ def run_push(profile: Path | None = None, remote_path: Path | str | None = None)
             source_device_id=stored.source_device_id,
         )
         uploaded += 1
+        uploaded_bytes += len(content)
     deleted = 0
     for row in list_dirty_tombstones(profile_root):
         metadata = _metadata_from_tombstone(device["device_id"], row)
@@ -179,10 +227,20 @@ def run_push(profile: Path | None = None, remote_path: Path | str | None = None)
         deleted += 1
     actions["uploaded"] = uploaded
     actions["deleted"] = deleted
+    metrics["uploaded_objects"] = uploaded
+    metrics["uploaded_bytes"] = uploaded_bytes
+    metrics["deleted_tombstones"] = deleted
     phases.append(
-        {"name": "upload", "status": "completed", "objects": uploaded, "tombstones": deleted}
+        {
+            "name": "upload",
+            "status": "completed",
+            "objects": uploaded,
+            "tombstones": deleted,
+            "bytes": uploaded_bytes,
+            "duration_ms": _elapsed_ms(phase_started),
+        }
     )
-    return _result("push", profile_root, backend, actions, staging, phases)
+    return _result("push", profile_root, backend, actions, staging, phases, metrics)
 
 
 def run_pull(profile: Path | None = None, remote_path: Path | str | None = None) -> Dict[str, Any]:
@@ -324,7 +382,8 @@ def run_once(profile: Path | None = None, remote_path: Path | str | None = None)
         {**phase, "name": f"push.{phase['name']}"} for phase in push_result["phases"]
     )
     backend = _backend_for(profile_root, remote_path)
-    return _result("once", profile_root, backend, actions, staging, phases)
+    metrics = _combine_metrics(pull_result.get("metrics"), push_result.get("metrics"))
+    return _result("once", profile_root, backend, actions, staging, phases, metrics)
 
 
 def restore_version(
@@ -479,16 +538,33 @@ def make_webdav_backend(sync_config: Dict[str, str]) -> WebDavBackend:
     )
 
 
-def _scan_export_objects(profile: Path) -> tuple[list[ScanObject], Dict[str, bytes]]:
+def _scan_export_objects(profile: Path) -> tuple[list[ScanObject], Dict[str, bytes], Dict[str, int]]:
     scope_flags = load_configured_scopes(profile, SUPPORTED_SYNC_SCOPES)
-    scan = scan_profile(profile, scopes=scope_flags)
+    scan = scan_profile(profile, scopes=scope_flags, hash_cache=_scan_hash_cache(profile))
     objects = list(scan.objects)
+    scan_metrics = {
+        "hashed_objects": scan.hashed_count,
+        "hash_reused_objects": scan.hash_reused_count,
+        "blocked_objects": scan.blocked_count,
+    }
     session_contents: Dict[str, bytes] = {}
     if scope_flags.get("sessions", False):
         for export in export_session_snapshots(profile):
             objects.append(export.scan_object)
             session_contents[export.scan_object.object_id] = export.content
-    return sorted(objects, key=lambda obj: (obj.scope, obj.logical_path)), session_contents
+    return sorted(objects, key=lambda obj: (obj.scope, obj.logical_path)), session_contents, scan_metrics
+
+
+def _scan_hash_cache(profile: Path) -> Dict[tuple[str, str], Dict[str, Any]]:
+    cache: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for row in list_manifest_objects(profile, include_deleted=False):
+        scope = str(row.get("scope") or "")
+        object_id = str(row.get("object_id") or "")
+        content_hash = str(row.get("content_hash") or "")
+        if not scope or not object_id or not content_hash:
+            continue
+        cache[(scope, object_id)] = row
+    return cache
 
 
 def _record_missing_deletes(profile: Path, device_id: str, scan_objects: list[ScanObject]) -> int:
@@ -1369,6 +1445,42 @@ def _empty_actions() -> Dict[str, int]:
     return {"uploaded": 0, "downloaded": 0, "imported": 0, "deleted": 0}
 
 
+def _empty_metrics() -> Dict[str, int]:
+    return {
+        "candidate_objects": 0,
+        "candidate_bytes": 0,
+        "hashed_objects": 0,
+        "hash_reused_objects": 0,
+        "dirty_objects": 0,
+        "dirty_bytes": 0,
+        "unchanged_objects": 0,
+        "unchanged_bytes": 0,
+        "staged_bytes": 0,
+        "uploaded_objects": 0,
+        "uploaded_bytes": 0,
+        "deleted_tombstones": 0,
+        "skipped_objects": 0,
+        "skipped_bytes": 0,
+    }
+
+
+def _combine_metrics(*items: Dict[str, Any] | None) -> Dict[str, int]:
+    combined = _empty_metrics()
+    for item in items:
+        if not item:
+            continue
+        for key in combined:
+            try:
+                combined[key] += int(item.get(key, 0))
+            except (TypeError, ValueError):
+                continue
+    return combined
+
+
+def _elapsed_ms(started: float) -> int:
+    return int(round((time.perf_counter() - started) * 1000))
+
+
 def _result(
     command: str,
     profile: Path,
@@ -1376,6 +1488,7 @@ def _result(
     actions: Dict[str, int],
     staging: Dict[str, int],
     phases: list[Dict[str, Any]],
+    metrics: Dict[str, int] | None = None,
 ) -> Dict[str, Any]:
     remote = getattr(backend, "root", None)
     return {
@@ -1385,6 +1498,7 @@ def _result(
         "remote": str(remote) if remote is not None else "unknown",
         "actions": actions,
         "staging": staging,
+        "metrics": metrics or _empty_metrics(),
         "phases": phases,
         "read_only": False,
     }

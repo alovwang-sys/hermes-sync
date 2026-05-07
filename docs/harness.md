@@ -174,17 +174,25 @@ Every sync run should produce a structured trace:
   "command": "once",
   "remote": "local",
   "phases": [
-    {"name": "scan", "status": "completed", "objects": 12},
-    {"name": "push", "status": "completed", "objects": 3},
-    {"name": "pull", "status": "completed", "objects": 1},
-    {"name": "import", "status": "completed", "objects": 1}
+    {"name": "scan", "status": "completed", "objects": 12, "duration_ms": 8},
+    {"name": "stage_outbox", "status": "completed", "objects": 3, "bytes": 9240},
+    {"name": "upload", "status": "completed", "objects": 3, "bytes": 9240, "duration_ms": 120},
+    {"name": "import", "status": "completed", "objects": 1, "duration_ms": 4}
   ],
+  "metrics": {
+    "candidate_objects": 12,
+    "dirty_objects": 3,
+    "unchanged_objects": 9,
+    "hash_reused_objects": 8,
+    "uploaded_bytes": 9240
+  },
   "conflicts": 0
 }
 ```
 
 Trace records are for debugging and evals. They must not include object content
-or secrets.
+or secrets. Incremental metrics count objects and bytes only; they are intended
+to show whether a run uploaded changed objects or merely scanned clean ones.
 
 ## Continuous Sync Harness
 

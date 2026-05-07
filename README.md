@@ -110,6 +110,8 @@ The implemented surfaces are:
 - stage incoming objects under `sync/inbox` before import
 - run `push`, `pull`, and `once` for supported config, artifact, and session
   snapshot objects
+- report incremental sync metrics, including dirty/unchanged object counts,
+  hash-cache reuse, uploaded bytes, and per-phase timings
 - export session snapshots from `state.db` through read-only SQLite queries and
   store pulled snapshots under plugin-owned `sync/sessions/` history
 - propagate deletes through explicit manifest and remote tombstones

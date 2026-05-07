@@ -63,7 +63,7 @@ considered complete.
 | Command adapter | In progress | Runs plugin APIs with structured results; top-level CLI waits on Hermes core. |
 | Manifest inspector | Complete | Reads `manifest.sqlite` and reports object state without mutation. |
 | Remote inspector | Complete | Lists remote objects and tombstones without importing them. |
-| Trace capture | In progress | Records phases, counts, and errors without object content or secrets. |
+| Trace capture | In progress | Records phases, timings, incremental object/byte counts, and errors without object content or secrets. |
 | Scenario runner | Complete through Phase 5 S3/R2 fake conformance | Runs required scenarios from `docs/harness.md` repeatably. |
 | Idempotency checks | Complete | Re-runs `push`, `pull`, and `once` and asserts no extra changes. |
 | Tombstone verifier | Complete | Confirms delete propagation uses explicit tombstones. |

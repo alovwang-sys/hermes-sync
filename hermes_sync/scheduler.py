@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .manifest import get_hermes_home, get_sync_dir, utc_now
+from .manifest import get_hermes_home, get_sync_dir, list_manifest_objects, utc_now
 from .sync_engine import SyncConfigurationError, run_once
 from .scopes import PathSafetyError, scan_profile, validate_profile_relative_path
 
@@ -465,7 +465,7 @@ def _poll_mtime(profile: Path, state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _mtime_signatures(profile: Path) -> dict[str, dict[str, Any]]:
-    scan = scan_profile(profile, scopes=POLL_SCOPES)
+    scan = scan_profile(profile, scopes=POLL_SCOPES, hash_cache=_scan_hash_cache(profile))
     signatures: dict[str, dict[str, Any]] = {}
     for obj in scan.objects:
         if obj.scope not in {"config", "artifacts"}:
@@ -479,6 +479,17 @@ def _mtime_signatures(profile: Path) -> dict[str, dict[str, Any]]:
             "content_hash": obj.content_hash,
         }
     return signatures
+
+
+def _scan_hash_cache(profile: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    cache: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in list_manifest_objects(profile, include_deleted=False):
+        scope = str(row.get("scope") or "")
+        object_id = str(row.get("object_id") or "")
+        content_hash = str(row.get("content_hash") or "")
+        if scope and object_id and content_hash:
+            cache[(scope, object_id)] = row
+    return cache
 
 
 def _lock_path(profile: Path) -> Path:

@@ -124,21 +124,27 @@ def handle_sync_command(raw_args: str) -> str:
     if data.get("status") == "ok" and data.get("command") in {"push", "pull", "once"}:
         actions = data["actions"]
         staging = data.get("staging", {})
-        return "\n".join(
-            [
-                "Hermes Sync now",
-                (
-                    "Actions: "
-                    f"{actions['uploaded']} uploaded, {actions['downloaded']} downloaded, "
-                    f"{actions['imported']} imported, {actions['deleted']} deleted"
-                ),
-                (
-                    "Staging: "
-                    f"{staging.get('outbox', 0)} outbox, {staging.get('inbox', 0)} inbox, "
-                    f"{staging.get('skipped', 0)} skipped"
-                ),
-            ]
-        )
+        metrics = data.get("metrics", {})
+        lines = [
+            "Hermes Sync now",
+            (
+                "Actions: "
+                f"{actions['uploaded']} uploaded, {actions['downloaded']} downloaded, "
+                f"{actions['imported']} imported, {actions['deleted']} deleted"
+            ),
+            (
+                "Staging: "
+                f"{staging.get('outbox', 0)} outbox, {staging.get('inbox', 0)} inbox, "
+                f"{staging.get('skipped', 0)} skipped"
+            ),
+        ]
+        incremental = _format_incremental_metrics(metrics)
+        if incremental:
+            lines.append(incremental)
+        timing = _format_phase_timings(data.get("phases", []))
+        if timing:
+            lines.append(timing)
+        return "\n".join(lines)
     if data.get("status") == "ok" and data.get("subcommand") == "conflicts":
         conflicts = data.get("conflicts", [])
         if not conflicts:
@@ -158,3 +164,51 @@ def handle_sync_command(raw_args: str) -> str:
     if data.get("status") == "not_implemented":
         return data["message"]
     return data.get("message", "Sync command failed.")
+
+
+def _format_incremental_metrics(metrics: Dict[str, Any]) -> str:
+    candidate_objects = _metric_int(metrics, "candidate_objects")
+    if candidate_objects <= 0:
+        return ""
+    dirty_objects = _metric_int(metrics, "dirty_objects")
+    unchanged_objects = _metric_int(metrics, "unchanged_objects")
+    hash_reused_objects = _metric_int(metrics, "hash_reused_objects")
+    uploaded_bytes = _metric_int(metrics, "uploaded_bytes")
+    candidate_bytes = _metric_int(metrics, "candidate_bytes")
+    return (
+        "Incremental: "
+        f"{dirty_objects} dirty / {candidate_objects} scanned, "
+        f"{unchanged_objects} unchanged, {hash_reused_objects} hash reused, "
+        f"{_format_bytes(uploaded_bytes)} uploaded / {_format_bytes(candidate_bytes)} candidates"
+    )
+
+
+def _format_phase_timings(phases: list[Dict[str, Any]]) -> str:
+    parts = []
+    for phase in phases:
+        if "duration_ms" not in phase:
+            continue
+        try:
+            duration = int(phase["duration_ms"])
+        except (TypeError, ValueError):
+            continue
+        parts.append(f"{phase.get('name', 'phase')}={duration}ms")
+    return "Timing: " + ", ".join(parts) if parts else ""
+
+
+def _metric_int(metrics: Dict[str, Any], key: str) -> int:
+    try:
+        return int(metrics.get(key, 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _format_bytes(value: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB")
+    amount = float(max(0, value))
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(amount)} {unit}"
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
