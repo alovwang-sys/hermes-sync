@@ -39,6 +39,64 @@ The installer writes:
 Without `--enable-local`, it does not edit `config.yaml`. It never stores
 credentials.
 
+## Automatic Cloud Config
+
+The installer can also write non-secret cloud routing settings. Credentials
+stay in the Hermes process environment and are never written to `config.yaml`.
+
+OSS:
+
+```bash
+export ALIBABA_CLOUD_ACCESS_KEY_ID=...
+export ALIBABA_CLOUD_ACCESS_KEY_SECRET=...
+
+python3 scripts/install_dev_plugin.py \
+  --profile ~/.hermes \
+  --enable-sync \
+  --remote oss \
+  --bucket your-test-bucket \
+  --endpoint https://s3.oss-cn-hangzhou.aliyuncs.com \
+  --region cn-hangzhou \
+  --prefix hermes-sync/default \
+  --replace-sync-config
+```
+
+Cloudflare R2:
+
+```bash
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+
+python3 scripts/install_dev_plugin.py \
+  --profile ~/.hermes \
+  --enable-sync \
+  --remote r2 \
+  --bucket your-test-bucket \
+  --endpoint https://account-id.r2.cloudflarestorage.com \
+  --prefix default-profile \
+  --replace-sync-config
+```
+
+WebDAV:
+
+```bash
+export HERMES_SYNC_WEBDAV_USERNAME=...
+export HERMES_SYNC_WEBDAV_PASSWORD=...
+
+python3 scripts/install_dev_plugin.py \
+  --profile ~/.hermes \
+  --enable-sync \
+  --remote webdav \
+  --url https://webdav.example.com/hermes-sync \
+  --prefix default-profile \
+  --replace-sync-config
+```
+
+The default generated scopes keep `sessions`, `memory`, `skills`, `plugins`,
+and `secrets` disabled. Add `--include-sessions`, `--include-memory`,
+`--include-skills`, or `--include-plugin-manifests` only after the first smoke
+test passes. The installer never enables `secrets`.
+
 ## Minimal Local Remote Config
 
 Add this to the Hermes profile `config.yaml`:

@@ -370,15 +370,69 @@ state, databases, credentials, logs, caches, and lock files should not appear.
 
 ### Switching to a Cloud Remote
 
-After the local-folder remote works cleanly, change only the `sync:` remote
-routing values in `config.yaml`. Keep credentials in environment variables,
-not in synced profile config. Supported remote values are:
+After the local-folder remote works cleanly, use the installer to write the
+cloud routing values for you. Keep credentials in environment variables, not in
+synced profile config.
+
+For Alibaba Cloud OSS:
+
+```bash
+export ALIBABA_CLOUD_ACCESS_KEY_ID=...
+export ALIBABA_CLOUD_ACCESS_KEY_SECRET=...
+
+python3 scripts/install_dev_plugin.py \
+  --profile ~/.hermes \
+  --enable-sync \
+  --remote oss \
+  --bucket your-hermes-sync-bucket \
+  --endpoint https://s3.oss-cn-hangzhou.aliyuncs.com \
+  --region cn-hangzhou \
+  --prefix hermes-sync/default-profile \
+  --replace-sync-config
+```
+
+For Cloudflare R2:
+
+```bash
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+
+python3 scripts/install_dev_plugin.py \
+  --profile ~/.hermes \
+  --enable-sync \
+  --remote r2 \
+  --bucket your-hermes-sync-bucket \
+  --endpoint https://account-id.r2.cloudflarestorage.com \
+  --prefix default-profile \
+  --replace-sync-config
+```
+
+For WebDAV:
+
+```bash
+export HERMES_SYNC_WEBDAV_USERNAME=...
+export HERMES_SYNC_WEBDAV_PASSWORD=...
+
+python3 scripts/install_dev_plugin.py \
+  --profile ~/.hermes \
+  --enable-sync \
+  --remote webdav \
+  --url https://webdav.example.com/hermes-sync \
+  --prefix default-profile \
+  --replace-sync-config
+```
+
+Supported remote values are:
 
 - `local` or `local-folder`
 - `oss`, `alibaba-oss`, or `aliyun-oss`
 - `webdav` or `web-dav`
 - `s3` or `s3-compatible`
 - `r2` or `cloudflare-r2`
+
+Use `--include-sessions`, `--include-memory`, `--include-skills`, or
+`--include-plugin-manifests` only after the first smoke test passes. The
+installer always keeps `secrets: false`.
 
 For real cloud remotes, start with a dedicated test bucket/path prefix and keep
 `sessions: false` until the destination and data policy are reviewed. Session
