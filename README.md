@@ -1,5 +1,7 @@
 # hermes-sync
 
+Language: English | [简体中文](README.zh-CN.md)
+
 `hermes-sync` is an Obsidian-style, local-first sync plugin for Hermes Agent
 profiles. It keeps sync policy outside Hermes core and synchronizes only
 explicitly allowed data scopes.
@@ -27,6 +29,7 @@ hermes-sync/
   AGENTS.md
   AGENT.md
   README.md
+  README.zh-CN.md
   feature_list.json
   plugin.yaml
   scripts/
